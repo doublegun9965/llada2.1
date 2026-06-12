@@ -19,6 +19,11 @@ if str(SRC_DIR) not in sys.path:
 
 from llada_experiments import SGLangClient, load_settings
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - exercised only on minimal server envs
+    tqdm = None
+
 
 NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 ANSWER_RE = re.compile(r"####\s*([-+]?\d[\d,]*(?:\.\d+)?)")
@@ -69,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--output-dir", default="outputs/gsm8k")
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
+    parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
     return parser.parse_args()
 
 
@@ -199,6 +205,13 @@ def safe_name(value: float) -> str:
     return str(value).replace("-", "m").replace(".", "p")
 
 
+def progress_write(message: str, *, enabled: bool) -> None:
+    if enabled and tqdm is not None:
+        tqdm.write(message)
+    else:
+        print(message, flush=True)
+
+
 def evaluate_threshold_pair(
     *,
     client: SGLangClient,
@@ -213,6 +226,7 @@ def evaluate_threshold_pair(
     temperature: float,
     max_tokens: int,
     sleep_seconds: float,
+    show_progress: bool,
 ) -> dict[str, Any]:
     extra_body = dict(base_extra_body)
     extra_body[confidence_key] = confidence_threshold
@@ -226,7 +240,14 @@ def evaluate_threshold_pair(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
-        for index, example in enumerate(examples, start=1):
+        progress_bar = None
+        iterable = examples
+        if show_progress and tqdm is not None:
+            description = f"conf={confidence_threshold} edit={edit_threshold}"
+            progress_bar = tqdm(examples, desc=description, unit="ex")
+            iterable = progress_bar
+
+        for index, example in enumerate(iterable, start=1):
             started = time.perf_counter()
             result = client.chat_completion(
                 model=model,
@@ -263,12 +284,21 @@ def evaluate_threshold_pair(
                 "completion": result.text,
             }
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            print(
-                f"[conf={confidence_threshold} edit={edit_threshold}] "
-                f"{index}/{len(examples)} correct={correct_count}/{index} "
-                f"latency={latency:.2f}s pred={prediction} gold={example.gold}",
-                flush=True,
-            )
+
+            if progress_bar is not None:
+                progress_bar.set_postfix(
+                    acc=f"{correct_count / index:.3f}",
+                    latency=f"{latency:.2f}s",
+                    pred=prediction,
+                    gold=example.gold,
+                )
+            elif not show_progress:
+                print(
+                    f"[conf={confidence_threshold} edit={edit_threshold}] "
+                    f"{index}/{len(examples)} correct={correct_count}/{index} "
+                    f"latency={latency:.2f}s pred={prediction} gold={example.gold}",
+                    flush=True,
+                )
 
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
@@ -368,16 +398,17 @@ def main() -> None:
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 sleep_seconds=args.sleep_seconds,
+                show_progress=not args.no_progress,
             )
             summaries.append(summary)
             write_summary(output_dir, summaries)
-            print(
+            progress_write(
                 f"SUMMARY conf={confidence_threshold} edit={edit_threshold} "
                 f"accuracy={summary['accuracy']:.4f} "
                 f"avg_latency={summary['avg_latency_seconds']:.2f}s "
                 f"tokens_per_second={summary['tokens_per_second']} "
                 f"chars_per_second={summary['chars_per_second']:.2f}",
-                flush=True,
+                enabled=not args.no_progress,
             )
 
     write_summary(output_dir, summaries)

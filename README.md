@@ -130,6 +130,9 @@ python experiments/gsm8k_threshold_sweep.py \
   --max-tokens 512
 ```
 
+The script shows a progress bar for each threshold pair by default. Use
+`--no-progress` if you want plain line-by-line logging.
+
 Outputs:
 
 ```text
