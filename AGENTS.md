@@ -1,0 +1,52 @@
+# Project Instructions for Codex Agents
+
+This repository is for LLaDA 2.1 experiments that are developed locally but run on a remote server.
+
+## Operating Model
+
+- The user edits and commits code locally, pushes to GitHub, then pulls and runs it on the server.
+- After making useful code changes, commit and push them to GitHub unless the user says not to.
+- Do not assume experiments can run locally. Local verification should focus on syntax, CLI help, config parsing, and small unit-style checks.
+- Server commands in README/scripts should be copy-paste friendly for Linux shell usage.
+
+## Server-Local Configuration
+
+- Prefer committed example/default config files plus ignored local override files.
+- Do not require the user to edit tracked config files for server-specific values.
+- Use this pattern whenever practical:
+  - `*.json` or `*.example.json`: tracked defaults/templates.
+  - `*.local.json`: user/server-specific config, ignored by Git.
+- Existing examples:
+  - `sglang_server/server_config.json`
+  - `sglang_server/server_config.local.example.json`
+  - `sglang_server/server_config.local.json`
+  - `sglang_server/generation_config.json`
+  - `sglang_server/generation_config.local.example.json`
+  - `sglang_server/generation_config.local.json`
+- Scripts should prefer `.local` files when present, then fall back to tracked defaults.
+- If adding environment variables for server runtime, prefer an ignored local env file plus a tracked example file instead of hardcoding server-only exports in tracked scripts.
+
+## SGLang and LLaDA 2.1
+
+- Inference is expected to go through an SGLang OpenAI-compatible API.
+- Keep threshold-related experiment code configurable. The SGLang branch may use different request field names for LLaDA 2.1 thresholds.
+- Current default threshold keys are:
+  - `confidence_threshold`
+  - `edit_threshold`
+- Also support overriding field names from CLI/config when reasonable.
+
+## Experiment Outputs
+
+- Write experiment results under `outputs/` by default.
+- Do not commit generated outputs, logs, datasets, model weights, or server-specific local config.
+- For sweeps, write both machine-readable summaries and per-example details when useful:
+  - `summary.csv`
+  - `summary.json`
+  - `details_*.jsonl`
+
+## Coding Conventions
+
+- Keep scripts runnable directly from a fresh Git checkout without requiring editable install when practical. Add `src/` to `sys.path` in top-level experiment scripts if needed.
+- Favor explicit CLI arguments and JSON config files over hardcoded constants.
+- Use ASCII in code and docs unless there is a clear reason otherwise.
+- Keep changes narrowly scoped to the experiment or workflow being requested.
