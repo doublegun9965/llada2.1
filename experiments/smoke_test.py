@@ -18,6 +18,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a minimal SGLang smoke test.")
     parser.add_argument("--prompt", default=None, help="Single prompt to run.")
     parser.add_argument("--input-jsonl", default=None, help="JSONL file with id and prompt fields.")
+    parser.add_argument(
+        "--generation-config",
+        default="sglang_server/generation_config.json",
+        help="JSON file whose extra_body is merged into the SGLang request.",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--output", default=None, help="Output JSONL path.")
@@ -38,10 +43,28 @@ def load_prompts(args: argparse.Namespace) -> list[dict[str, str]]:
     return rows
 
 
+def load_extra_body(path: str | None) -> dict:
+    if not path:
+        return {}
+
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Generation config not found: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+
+    extra_body = config.get("extra_body", {})
+    if not isinstance(extra_body, dict):
+        raise ValueError(f"{config_path}: extra_body must be a JSON object")
+    return extra_body
+
+
 def main() -> None:
     args = parse_args()
     settings = load_settings()
     settings.output_dir.mkdir(parents=True, exist_ok=True)
+    extra_body = load_extra_body(args.generation_config)
 
     output_path = Path(args.output) if args.output else settings.output_dir / "smoke_results.jsonl"
     client = SGLangClient(
@@ -58,6 +81,7 @@ def main() -> None:
                 prompt=item["prompt"],
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                extra_body=extra_body,
             )
             record = {
                 "id": item["id"],

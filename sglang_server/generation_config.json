@@ -1,0 +1,6 @@
+{
+  "extra_body": {
+    "confidence_threshold": 0.85,
+    "edit_threshold": 0.85
+  }
+}

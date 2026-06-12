@@ -79,3 +79,39 @@ python experiments/smoke_test.py --prompt "Say hello from the latest commit."
 ```bash
 bash scripts/server_pull_run.sh experiments/smoke_test.py --prompt "Say hello"
 ```
+
+## Start SGLang
+
+Server launch files live in `sglang_server/`.
+
+Edit the model path and server parameters:
+
+```bash
+vim sglang_server/server_config.json
+```
+
+Start the SGLang OpenAI-compatible server:
+
+```bash
+bash sglang_server/start_sglang.sh
+```
+
+Check whether the server is alive:
+
+```bash
+bash sglang_server/check_sglang.sh
+```
+
+LLaDA2.1 decoding parameters are in:
+
+```bash
+vim sglang_server/generation_config.json
+```
+
+Run an experiment with that decoding config:
+
+```bash
+python experiments/smoke_test.py \
+  --generation-config sglang_server/generation_config.json \
+  --prompt "say hello from the latest commit"
+```
