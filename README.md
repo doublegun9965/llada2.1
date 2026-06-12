@@ -1,127 +1,93 @@
 # llada2.1 experiments
 
-这个仓库用于管理 LLaDA 2.1 相关实验代码。本地负责写代码和提交到 GitHub，服务器从 GitHub 拉取最新代码并运行实验。推理侧默认通过 SGLang 的 OpenAI-compatible HTTP API 调用模型。
+This repository contains LLaDA 2.1 experiments. Code is developed locally, pushed to GitHub, pulled on the server, and run against an SGLang OpenAI-compatible server.
 
-## Repository layout
+## Layout
 
 ```text
-.
-├── experiments/              # 可直接运行的实验入口
-├── scripts/                  # 本地同步、服务器运行脚本
-├── src/llada_experiments/    # 复用代码
-├── prompts/                  # 输入 prompt 样例
-├── outputs/                  # 实验输出，本地忽略，不提交
-└── .env.example              # 环境变量样例
+experiments/              Experiment entry points
+scripts/                  Git and server helper scripts
+sglang_server/            SGLang launch/config files
+src/llada_experiments/    Shared Python utilities
+prompts/                  Prompt examples
+outputs/                  Generated results, ignored by Git
 ```
 
-## Local setup
+## Server Setup
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
-Copy-Item .env.example .env
-```
-
-编辑 `.env`，填入服务器上的 SGLang 地址、模型名和 API key。如果 SGLang 不需要鉴权，`SGLANG_API_KEY=EMPTY` 即可。
-
-## Run a smoke test
-
-```powershell
-python experiments/smoke_test.py --prompt "Explain diffusion language models in one paragraph."
-```
-
-输出会写到 `outputs/`，这个目录默认不提交到 GitHub。
-
-## GitHub workflow
-
-首次创建 GitHub 仓库后，把远端地址加进来：
-
-```powershell
-git remote add origin git@github.com:<your-user>/<your-repo>.git
-git push -u origin main
-```
-
-之后每次改完代码，可以用：
-
-```powershell
-.\scripts\sync.ps1 "describe this experiment change"
-```
-
-这个脚本会执行 `git add`、`git commit`、`git push`。如果没有改动，它会直接退出。
-
-## Server workflow
-
-服务器首次部署：
+Pull the latest code and install dependencies:
 
 ```bash
-git clone git@github.com:<your-user>/<your-repo>.git ~/llada2.1
-cd ~/llada2.1
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp .env.example .env
-```
-
-编辑服务器上的 `.env`，让 `SGLANG_BASE_URL` 指向云端 SGLang 服务。
-
-之后每次本地 push 后，在服务器运行：
-
-```bash
-cd ~/llada2.1
+cd /mt/workspace/llada2.1
 git pull --ff-only
-source .venv/bin/activate
-python experiments/smoke_test.py --prompt "Say hello from the latest commit."
+pip install -e .
 ```
 
-也可以把命令封装成：
+If you use a local GSM8K JSONL file, put it anywhere and pass the path with `--input-jsonl`. Recommended path:
 
 ```bash
-bash scripts/server_pull_run.sh experiments/smoke_test.py --prompt "Say hello"
+/mt/workspace/data/gsm8k_test.jsonl
 ```
 
-## Start SGLang
+Each JSONL line should contain:
 
-Server launch files live in `sglang_server/`.
+```json
+{"question": "...", "answer": "... #### 42"}
+```
 
-Edit the model path and server parameters:
+## Config Files
+
+Use local config files for server-specific settings. Local config files are ignored by Git and will not block `git pull`.
+
+### SGLang Server Config
+
+Create a server-local config:
 
 ```bash
 cp sglang_server/server_config.local.example.json sglang_server/server_config.local.json
 vim sglang_server/server_config.local.json
 ```
 
-Start the SGLang OpenAI-compatible server:
+Important fields:
 
-```bash
-bash sglang_server/start_sglang.sh
+```json
+{
+  "model_path": "/mt/workspace/models/LLaDA2.1-Mini",
+  "served_model_name": "llada2.1",
+  "host": "0.0.0.0",
+  "port": 30000,
+  "tensor_parallel_size": 1,
+  "mem_fraction_static": null,
+  "dllm_algorithm": "JointThreshold",
+  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml"
+}
 ```
 
-Check whether the server is alive:
+### LLaDA 2.1 Threshold Config
 
-```bash
-bash sglang_server/check_sglang.sh
-```
+For SGLang `0.5.12.post1`, LLaDA 2.1 thresholds are startup-time DLLM algorithm settings. They are not request-body parameters.
 
-LLaDA2.1 decoding parameters are in:
+Manual config file:
 
 ```bash
 cp sglang_server/dllm_algorithm_config.local.example.yaml sglang_server/dllm_algorithm_config.local.yaml
 vim sglang_server/dllm_algorithm_config.local.yaml
 ```
 
-SGLang 0.5.12.post1 reads LLaDA2.1 `threshold` and `edit_threshold` at server startup through `--dllm-algorithm-config`, so changing these values requires restarting SGLang.
+Example:
 
-Run a smoke test:
-
-```bash
-python experiments/smoke_test.py \
-  --prompt "say hello from the latest commit"
+```yaml
+threshold: 0.5
+edit_threshold: 0.0
+max_post_edit_steps: 16
+penalty_lambda: 0
 ```
 
-## GSM8K Threshold Sweep
+Changing `threshold` or `edit_threshold` requires restarting SGLang.
 
-Evaluate GSM8K accuracy and generation speed across LLaDA2.1 threshold pairs:
+## Run GSM8K Sweep Automatically
+
+This is the recommended path. Do not start SGLang manually first.
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
@@ -132,15 +98,162 @@ python experiments/gsm8k_threshold_sweep.py \
   --max-tokens 512
 ```
 
-The script writes a DLLM YAML config, starts SGLang, waits until `/v1/models` is ready, evaluates GSM8K, then stops SGLang for each threshold pair. It shows a progress bar for each threshold pair by default. Use
-`--no-progress` if you want plain line-by-line logging.
-
-Outputs:
+The script does this for each threshold pair:
 
 ```text
-outputs/gsm8k/run_<timestamp>/summary.csv
-outputs/gsm8k/run_<timestamp>/summary.json
-outputs/gsm8k/run_<timestamp>/details_threshold_<value>_edit_<value>.jsonl
-outputs/gsm8k/run_<timestamp>/dllm_configs/
-outputs/gsm8k/run_<timestamp>/server_logs/
+write DLLM YAML config
+start SGLang
+wait for /v1/models
+run GSM8K
+stop SGLang
+move to next threshold pair
+```
+
+Set generation length with:
+
+```bash
+--max-tokens 512
+```
+
+Use smaller values for faster debugging:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --limit 5 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 256
+```
+
+Outputs are written to a fresh timestamped directory:
+
+```text
+outputs/gsm8k/run_<timestamp>/
+  summary.csv
+  summary.json
+  details_threshold_<value>_edit_<value>.jsonl
+  dllm_configs/
+  server_logs/
+```
+
+## Manual SGLang Mode
+
+Use this only when you want to start SGLang yourself.
+
+1. Edit server config:
+
+```bash
+vim sglang_server/server_config.local.json
+```
+
+2. Edit threshold config:
+
+```bash
+vim sglang_server/dllm_algorithm_config.local.yaml
+```
+
+3. Start SGLang:
+
+```bash
+bash sglang_server/start_sglang.sh
+```
+
+4. In another terminal, check the server:
+
+```bash
+bash sglang_server/check_sglang.sh
+```
+
+5. Run one evaluation against the already-running server:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --use-running-server \
+  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512
+```
+
+`--use-running-server` can only evaluate one threshold pair, because thresholds are fixed when SGLang starts.
+
+## Smoke Test
+
+After SGLang is running:
+
+```bash
+python experiments/smoke_test.py --prompt "say hello"
+```
+
+If the server is not running, this will fail with `Connection refused`.
+
+## Troubleshooting
+
+### `RemoteProtocolError: Server disconnected without sending a response`
+
+This usually means SGLang accepted the connection but closed it before returning a response. Common causes:
+
+- SGLang worker crashed during generation.
+- GPU OOM or memory pressure.
+- The output length is too large for the current memory settings.
+- The port is connected to an old/stale SGLang process.
+- The model path or DLLM config is incompatible with the server.
+
+Check the log printed by the sweep script, for example:
+
+```text
+outputs/gsm8k/run_<timestamp>/server_logs/threshold_0p5_edit_0p0.log
+```
+
+Useful commands:
+
+```bash
+tail -n 200 outputs/gsm8k/run_<timestamp>/server_logs/<log-file>.log
+nvidia-smi
+curl http://127.0.0.1:30000/v1/models
+```
+
+For debugging, reduce workload first:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --limit 1 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 128
+```
+
+### `Connection refused`
+
+No SGLang server is listening on the configured port. Either run the automatic sweep script, or start SGLang manually with:
+
+```bash
+bash sglang_server/start_sglang.sh
+```
+
+### Hugging Face dataset download errors
+
+Use local JSONL instead of downloading on the server:
+
+```bash
+--input-jsonl /mt/workspace/data/gsm8k_test.jsonl
+```
+
+## Git Workflow
+
+After local edits:
+
+```powershell
+.\scripts\sync.ps1 "describe the change"
+```
+
+On the server:
+
+```bash
+cd /mt/workspace/llada2.1
+git pull --ff-only
+pip install -e .
 ```

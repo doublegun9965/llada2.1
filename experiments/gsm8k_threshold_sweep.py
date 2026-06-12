@@ -523,7 +523,14 @@ def main() -> None:
                 dllm_config_path=dllm_config_path,
                 log_path=server_log_path,
             )
-            wait_for_server(client_base_url, process, args.startup_timeout_seconds)
+            try:
+                wait_for_server(client_base_url, process, args.startup_timeout_seconds)
+            except Exception as exc:
+                stop_sglang_server(process, args.shutdown_timeout_seconds)
+                raise RuntimeError(
+                    f"SGLang failed to become ready for {pair_name}. "
+                    f"Check the server log: {server_log_path}"
+                ) from exc
 
         try:
             client = SGLangClient(
@@ -544,6 +551,19 @@ def main() -> None:
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
             )
+        except Exception as exc:
+            if process is not None:
+                exit_code = process.poll()
+                status = (
+                    f"SGLang exited with code {exit_code}"
+                    if exit_code is not None
+                    else "SGLang process is still running but disconnected"
+                )
+                raise RuntimeError(
+                    f"Request failed for {pair_name}: {status}. "
+                    f"Check the server log: {server_log_path}"
+                ) from exc
+            raise
         finally:
             if process is not None:
                 print("Stopping SGLang")
