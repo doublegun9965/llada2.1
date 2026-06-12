@@ -38,6 +38,8 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 ## Experiment Outputs
 
 - Write experiment results under `outputs/` by default.
+- Every experiment run must write results into a fresh timestamped run directory to avoid overwriting previous runs. Prefer names like `outputs/<experiment>/run_YYYYmmdd_HHMMSS/`.
+- If a script accepts `--output-dir`, treat it as the base directory and create a timestamped run subdirectory under it unless the user explicitly asks for a fixed output path.
 - Do not commit generated outputs, logs, datasets, model weights, or server-specific local config.
 - For sweeps, write both machine-readable summaries and per-example details when useful:
   - `summary.csv`
