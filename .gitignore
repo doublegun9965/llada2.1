@@ -16,6 +16,7 @@ outputs/
 logs/
 *.log
 sglang_server/server_config.local.json
+sglang_server/generation_config.local.json
 
 .DS_Store
 Thumbs.db

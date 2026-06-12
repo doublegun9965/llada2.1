@@ -20,8 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-jsonl", default=None, help="JSONL file with id and prompt fields.")
     parser.add_argument(
         "--generation-config",
-        default="sglang_server/generation_config.json",
-        help="JSON file whose extra_body is merged into the SGLang request.",
+        default=None,
+        help=(
+            "JSON file whose extra_body is merged into the SGLang request. "
+            "Defaults to generation_config.local.json when present, otherwise generation_config.json."
+        ),
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=256)
@@ -43,11 +46,16 @@ def load_prompts(args: argparse.Namespace) -> list[dict[str, str]]:
     return rows
 
 
-def load_extra_body(path: str | None) -> dict:
-    if not path:
-        return {}
+def default_generation_config_path() -> Path:
+    local_path = Path("sglang_server/generation_config.local.json")
+    if local_path.exists():
+        return local_path
+    return Path("sglang_server/generation_config.json")
 
-    config_path = Path(path)
+
+def load_extra_body(path: str | None) -> dict:
+    config_path = Path(path) if path else default_generation_config_path()
+
     if not config_path.exists():
         raise FileNotFoundError(f"Generation config not found: {config_path}")
 

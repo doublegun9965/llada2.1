@@ -87,7 +87,8 @@ Server launch files live in `sglang_server/`.
 Edit the model path and server parameters:
 
 ```bash
-vim sglang_server/server_config.json
+cp sglang_server/server_config.local.example.json sglang_server/server_config.local.json
+vim sglang_server/server_config.local.json
 ```
 
 Start the SGLang OpenAI-compatible server:
@@ -105,13 +106,14 @@ bash sglang_server/check_sglang.sh
 LLaDA2.1 decoding parameters are in:
 
 ```bash
-vim sglang_server/generation_config.json
+cp sglang_server/generation_config.local.example.json sglang_server/generation_config.local.json
+vim sglang_server/generation_config.local.json
 ```
 
-Run an experiment with that decoding config:
+Run an experiment with the local decoding config. `smoke_test.py` will use
+`sglang_server/generation_config.local.json` automatically when it exists:
 
 ```bash
 python experiments/smoke_test.py \
-  --generation-config sglang_server/generation_config.json \
   --prompt "say hello from the latest commit"
 ```
