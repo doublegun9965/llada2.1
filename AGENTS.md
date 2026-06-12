@@ -25,6 +25,10 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
   - `sglang_server/generation_config.local.json`
 - Scripts should prefer `.local` files when present, then fall back to tracked defaults.
 - If adding environment variables for server runtime, prefer an ignored local env file plus a tracked example file instead of hardcoding server-only exports in tracked scripts.
+- Existing SGLang runtime env pattern:
+  - `sglang_server/server_env.example`: tracked template.
+  - `sglang_server/server_env.local`: ignored server-local env file loaded before SGLang starts.
+  - Current useful env var: `export SGLANG_DISABLE_VLLM_RMSNORM=1`.
 
 ## SGLang and LLaDA 2.1
 

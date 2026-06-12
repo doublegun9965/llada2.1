@@ -34,6 +34,21 @@ It has the same shape as `sglang_server/server_config.json`:
 
 ## 2. Start SGLang
 
+Create a local environment file if this server needs SGLang runtime env vars:
+
+```bash
+cp sglang_server/server_env.example sglang_server/server_env.local
+vim sglang_server/server_env.local
+```
+
+Recommended for the current ROCm/RMSNorm issue:
+
+```bash
+export SGLANG_DISABLE_VLLM_RMSNORM=1
+```
+
+`server_env.local` is ignored by Git and loaded before SGLang starts.
+
 For LLaDA2.1 on SGLang 0.5.12.post1, thresholds are read at server startup from a YAML file passed through `--dllm-algorithm-config`.
 
 Create a local DLLM algorithm config:

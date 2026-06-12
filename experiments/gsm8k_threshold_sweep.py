@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -120,6 +121,32 @@ def default_server_config_path() -> Path:
     return Path("sglang_server/server_config.json")
 
 
+def default_server_env_path() -> Path:
+    return Path("sglang_server/server_env.local")
+
+
+def load_server_env(path: Path | None = None) -> dict[str, str]:
+    env_path = path or default_server_env_path()
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
+
+
 def load_base_extra_body(path: str | None) -> dict[str, Any]:
     config_path = Path(path) if path else default_generation_config_path()
     if not config_path.exists():
@@ -171,6 +198,13 @@ def start_sglang_server(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("w", encoding="utf-8")
     log_handle.write("$ " + " ".join(command) + "\n")
+    env = os.environ.copy()
+    server_env = load_server_env()
+    if server_env:
+        env.update(server_env)
+        log_handle.write(
+            "# Loaded env: " + ", ".join(f"{key}={value}" for key, value in sorted(server_env.items())) + "\n"
+        )
     log_handle.flush()
 
     process = subprocess.Popen(
@@ -178,6 +212,7 @@ def start_sglang_server(
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         cwd=REPO_ROOT,
+        env=env,
         text=True,
     )
     process._llada_log_handle = log_handle  # type: ignore[attr-defined]

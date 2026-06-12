@@ -63,6 +63,23 @@ Important fields:
 }
 ```
 
+### SGLang Environment Variables
+
+Create a server-local env file:
+
+```bash
+cp sglang_server/server_env.example sglang_server/server_env.local
+vim sglang_server/server_env.local
+```
+
+Current recommended content for the ROCm/SGLang RMSNorm issue:
+
+```bash
+export SGLANG_DISABLE_VLLM_RMSNORM=1
+```
+
+Both automatic GSM8K sweep and manual `bash sglang_server/start_sglang.sh` load `sglang_server/server_env.local` before starting SGLang.
+
 ### LLaDA 2.1 Threshold Config
 
 For SGLang `0.5.12.post1`, LLaDA 2.1 thresholds are startup-time DLLM algorithm settings. They are not request-body parameters.
@@ -200,6 +217,7 @@ This usually means SGLang accepted the connection but closed it before returning
 - The output length is too large for the current memory settings.
 - The port is connected to an old/stale SGLang process.
 - The model path or DLLM config is incompatible with the server.
+- `SGLANG_DISABLE_VLLM_RMSNORM=1` is missing, which can trigger `TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given` on this server setup.
 
 Check the log printed by the sweep script, for example:
 
@@ -213,6 +231,24 @@ Useful commands:
 tail -n 200 outputs/gsm8k/run_<timestamp>/server_logs/<log-file>.log
 nvidia-smi
 curl http://127.0.0.1:30000/v1/models
+```
+
+If the log contains:
+
+```text
+TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given
+```
+
+create or check:
+
+```bash
+cat sglang_server/server_env.local
+```
+
+It should include:
+
+```bash
+export SGLANG_DISABLE_VLLM_RMSNORM=1
 ```
 
 For debugging, reduce workload first:

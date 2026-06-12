@@ -16,4 +16,9 @@ fi
 cd "$REPO_DIR"
 mkdir -p logs
 
+if [ -f "$SCRIPT_DIR/server_env.local" ]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/server_env.local"
+fi
+
 python sglang_server/launch_sglang.py --config "$CONFIG" 2>&1 | tee logs/sglang_server.log

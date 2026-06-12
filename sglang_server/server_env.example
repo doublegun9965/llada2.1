@@ -1,0 +1,4 @@
+# Copy this file to sglang_server/server_env.local on the server.
+# server_env.local is ignored by Git and loaded by manual and automatic SGLang launch.
+
+export SGLANG_DISABLE_VLLM_RMSNORM=1
