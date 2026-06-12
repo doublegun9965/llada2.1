@@ -136,9 +136,9 @@ The script shows a progress bar for each threshold pair by default. Use
 Outputs:
 
 ```text
-outputs/gsm8k/summary.csv
-outputs/gsm8k/summary.json
-outputs/gsm8k/details_conf_<value>_edit_<value>.jsonl
+outputs/gsm8k/run_<timestamp>/summary.csv
+outputs/gsm8k/run_<timestamp>/summary.json
+outputs/gsm8k/run_<timestamp>/details_conf_<value>_edit_<value>.jsonl
 ```
 
 If your SGLang branch uses different request keys for LLaDA2.1 thresholds:

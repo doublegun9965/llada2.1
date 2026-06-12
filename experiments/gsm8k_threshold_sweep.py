@@ -205,6 +205,11 @@ def safe_name(value: float) -> str:
     return str(value).replace("-", "m").replace(".", "p")
 
 
+def make_run_output_dir(base_output_dir: str) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(base_output_dir) / f"run_{timestamp}"
+
+
 def progress_write(message: str, *, enabled: bool) -> None:
     if enabled and tqdm is not None:
         tqdm.write(message)
@@ -375,8 +380,9 @@ def main() -> None:
     confidence_thresholds = parse_thresholds(args.confidence_thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
     base_extra_body = load_base_extra_body(args.generation_config)
-    output_dir = Path(args.output_dir)
+    output_dir = make_run_output_dir(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Writing GSM8K results to {output_dir}")
 
     summaries: list[dict[str, Any]] = []
     for confidence_threshold in confidence_thresholds:
