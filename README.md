@@ -18,7 +18,7 @@ outputs/                  Generated results, ignored by Git
 Pull the latest code and install dependencies:
 
 ```bash
-cd /mt/workspace/llada2.1
+cd /mnt/workspace/llada2.1
 git pull --ff-only
 pip install -e .
 ```
@@ -26,7 +26,7 @@ pip install -e .
 If you use a local GSM8K JSONL file, put it anywhere and pass the path with `--input-jsonl`. Recommended path:
 
 ```bash
-/mt/workspace/data/gsm8k_test.jsonl
+/mnt/workspace/data/gsm8k_test.jsonl
 ```
 
 Each JSONL line should contain:
@@ -52,7 +52,7 @@ Important fields:
 
 ```json
 {
-  "model_path": "/mt/workspace/models/LLaDA2.1-Mini",
+  "model_path": "/mnt/workspace/models/LLaDA2.1-Mini",
   "served_model_name": "llada2.1",
   "host": "0.0.0.0",
   "port": 30000,
@@ -108,7 +108,7 @@ This is the recommended path. Do not start SGLang manually first.
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
   --limit 100 \
   --thresholds 0.4,0.5,0.6 \
   --edit-thresholds 0.0,0.2,0.4 \
@@ -136,7 +136,7 @@ Use smaller values for faster debugging:
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
   --limit 5 \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
@@ -187,7 +187,7 @@ bash sglang_server/check_sglang.sh
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
   --use-running-server \
-  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
   --limit 100 \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
@@ -255,7 +255,7 @@ For debugging, reduce workload first:
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
   --limit 1 \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
@@ -275,7 +275,7 @@ bash sglang_server/start_sglang.sh
 Use local JSONL instead of downloading on the server:
 
 ```bash
---input-jsonl /mt/workspace/data/gsm8k_test.jsonl
+--input-jsonl /mnt/workspace/data/gsm8k_test.jsonl
 ```
 
 ## Git Workflow
@@ -289,7 +289,7 @@ After local edits:
 On the server:
 
 ```bash
-cd /mt/workspace/llada2.1
+cd /mnt/workspace/llada2.1
 git pull --ff-only
 pip install -e .
 ```

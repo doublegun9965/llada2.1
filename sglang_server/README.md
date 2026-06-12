@@ -15,7 +15,7 @@ It has the same shape as `sglang_server/server_config.json`:
 
 ```json
 {
-  "model_path": "/mt/workspace/models/LLaDA2.1-Mini",
+  "model_path": "/mnt/workspace/models/LLaDA2.1-Mini",
   "served_model_name": "llada2.1",
   "host": "0.0.0.0",
   "port": 30000,
@@ -68,7 +68,7 @@ penalty_lambda: 0
 ```
 
 ```bash
-cd /mt/workspace/llada2.1
+cd /mnt/workspace/llada2.1
 bash sglang_server/start_sglang.sh
 ```
 
