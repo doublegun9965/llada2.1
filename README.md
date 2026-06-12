@@ -117,3 +117,31 @@ Run an experiment with the local decoding config. `smoke_test.py` will use
 python experiments/smoke_test.py \
   --prompt "say hello from the latest commit"
 ```
+
+## GSM8K Threshold Sweep
+
+Evaluate GSM8K accuracy and generation speed across LLaDA2.1 threshold pairs:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --limit 100 \
+  --confidence-thresholds 0.6,0.7,0.8,0.9 \
+  --edit-thresholds 0.6,0.7,0.8,0.9 \
+  --max-tokens 512
+```
+
+Outputs:
+
+```text
+outputs/gsm8k/summary.csv
+outputs/gsm8k/summary.json
+outputs/gsm8k/details_conf_<value>_edit_<value>.jsonl
+```
+
+If your SGLang branch uses different request keys for LLaDA2.1 thresholds:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --confidence-key confidence_thresold \
+  --edit-key edit_thresold
+```
