@@ -17,6 +17,7 @@ logs/
 *.log
 sglang_server/server_config.local.json
 sglang_server/generation_config.local.json
+sglang_server/dllm_algorithm_config.local.yaml
 
 .DS_Store
 Thumbs.db

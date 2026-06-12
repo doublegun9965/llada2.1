@@ -1,6 +1,6 @@
 # SGLang server
 
-This folder contains the server launch config and the LLaDA2.1 request-time decoding config.
+This folder contains SGLang server launch config and DLLM algorithm config for LLaDA2.1.
 
 ## 1. Edit server config
 
@@ -24,6 +24,8 @@ It has the same shape as `sglang_server/server_config.json`:
   "dtype": "auto",
   "context_length": null,
   "mem_fraction_static": null,
+  "dllm_algorithm": "JointThreshold",
+  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml",
   "extra_launch_args": []
 }
 ```
@@ -31,6 +33,24 @@ It has the same shape as `sglang_server/server_config.json`:
 `server_config.local.json` is ignored by Git. `start_sglang.sh` will prefer the local file when it exists, otherwise it falls back to `server_config.json`.
 
 ## 2. Start SGLang
+
+For LLaDA2.1 on SGLang 0.5.12.post1, thresholds are read at server startup from a YAML file passed through `--dllm-algorithm-config`.
+
+Create a local DLLM algorithm config:
+
+```bash
+cp sglang_server/dllm_algorithm_config.local.example.yaml sglang_server/dllm_algorithm_config.local.yaml
+vim sglang_server/dllm_algorithm_config.local.yaml
+```
+
+Example:
+
+```yaml
+threshold: 0.5
+edit_threshold: 0.0
+max_post_edit_steps: 16
+penalty_lambda: 0
+```
 
 ```bash
 cd /mt/workspace/llada2.1
@@ -51,9 +71,11 @@ Check whether the OpenAI-compatible API is alive:
 bash sglang_server/check_sglang.sh
 ```
 
-## 3. Edit LLaDA2.1 decoding config
+## 3. Request extra body config
 
-Edit a local decoding config:
+`generation_config.json` is only for request-level extra body values. Do not put LLaDA2.1 `threshold` or `edit_threshold` here; SGLang 0.5.12.post1 reads those from `--dllm-algorithm-config` at server startup.
+
+Edit a local request extra body config only when you need non-DLLM request fields:
 
 ```bash
 cp sglang_server/generation_config.local.example.json sglang_server/generation_config.local.json
@@ -64,14 +86,9 @@ It has the same shape as `sglang_server/generation_config.json`:
 
 ```json
 {
-  "extra_body": {
-    "confidence_threshold": 0.85,
-    "edit_threshold": 0.85
-  }
+  "extra_body": {}
 }
 ```
-
-These fields are sent directly in the JSON body of `/v1/chat/completions`. If your SGLang LLaDA2.1 branch uses different names, change the keys in `generation_config.local.json`. For example, if the branch uses the misspelled names `confidence_thresold` and `edit_thresold`, put those exact keys in `extra_body`.
 
 Run a test with the config:
 

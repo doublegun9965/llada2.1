@@ -1,0 +1,4 @@
+threshold: 0.5
+edit_threshold: 0.0
+max_post_edit_steps: 16
+penalty_lambda: 0

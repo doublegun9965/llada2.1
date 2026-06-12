@@ -106,12 +106,13 @@ bash sglang_server/check_sglang.sh
 LLaDA2.1 decoding parameters are in:
 
 ```bash
-cp sglang_server/generation_config.local.example.json sglang_server/generation_config.local.json
-vim sglang_server/generation_config.local.json
+cp sglang_server/dllm_algorithm_config.local.example.yaml sglang_server/dllm_algorithm_config.local.yaml
+vim sglang_server/dllm_algorithm_config.local.yaml
 ```
 
-Run an experiment with the local decoding config. `smoke_test.py` will use
-`sglang_server/generation_config.local.json` automatically when it exists:
+SGLang 0.5.12.post1 reads LLaDA2.1 `threshold` and `edit_threshold` at server startup through `--dllm-algorithm-config`, so changing these values requires restarting SGLang.
+
+Run a smoke test:
 
 ```bash
 python experiments/smoke_test.py \
@@ -124,13 +125,14 @@ Evaluate GSM8K accuracy and generation speed across LLaDA2.1 threshold pairs:
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mt/workspace/data/gsm8k_test.jsonl \
   --limit 100 \
-  --confidence-thresholds 0.6,0.7,0.8,0.9 \
-  --edit-thresholds 0.6,0.7,0.8,0.9 \
+  --thresholds 0.4,0.5,0.6 \
+  --edit-thresholds 0.0,0.2,0.4 \
   --max-tokens 512
 ```
 
-The script shows a progress bar for each threshold pair by default. Use
+The script writes a DLLM YAML config, starts SGLang, waits until `/v1/models` is ready, evaluates GSM8K, then stops SGLang for each threshold pair. It shows a progress bar for each threshold pair by default. Use
 `--no-progress` if you want plain line-by-line logging.
 
 Outputs:
@@ -138,13 +140,7 @@ Outputs:
 ```text
 outputs/gsm8k/run_<timestamp>/summary.csv
 outputs/gsm8k/run_<timestamp>/summary.json
-outputs/gsm8k/run_<timestamp>/details_conf_<value>_edit_<value>.jsonl
-```
-
-If your SGLang branch uses different request keys for LLaDA2.1 thresholds:
-
-```bash
-python experiments/gsm8k_threshold_sweep.py \
-  --confidence-key confidence_thresold \
-  --edit-key edit_thresold
+outputs/gsm8k/run_<timestamp>/details_threshold_<value>_edit_<value>.jsonl
+outputs/gsm8k/run_<timestamp>/dllm_configs/
+outputs/gsm8k/run_<timestamp>/server_logs/
 ```

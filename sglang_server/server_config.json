@@ -8,5 +8,7 @@
   "dtype": "auto",
   "context_length": null,
   "mem_fraction_static": null,
+  "dllm_algorithm": "JointThreshold",
+  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.yaml",
   "extra_launch_args": []
 }

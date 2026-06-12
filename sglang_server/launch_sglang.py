@@ -58,6 +58,8 @@ def build_command(config: dict[str, Any]) -> list[str]:
     add_optional_arg(command, "--dtype", config.get("dtype"))
     add_optional_arg(command, "--context-length", config.get("context_length"))
     add_optional_arg(command, "--mem-fraction-static", config.get("mem_fraction_static"))
+    add_optional_arg(command, "--dllm-algorithm", config.get("dllm_algorithm"))
+    add_optional_arg(command, "--dllm-algorithm-config", config.get("dllm_algorithm_config"))
 
     if config.get("trust_remote_code", True):
         command.append("--trust-remote-code")

@@ -29,11 +29,12 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 ## SGLang and LLaDA 2.1
 
 - Inference is expected to go through an SGLang OpenAI-compatible API.
-- Keep threshold-related experiment code configurable. The SGLang branch may use different request field names for LLaDA 2.1 thresholds.
-- Current default threshold keys are:
-  - `confidence_threshold`
+- For SGLang `0.5.12.post1`, LLaDA 2.1 `JointThreshold` parameters are server-startup DLLM algorithm config values, not OpenAI request-body values.
+- Threshold sweeps must generate a YAML file and restart SGLang for each threshold pair using `--dllm-algorithm JointThreshold --dllm-algorithm-config <path>`.
+- Current SGLang `JointThreshold` YAML keys are:
+  - `threshold`
   - `edit_threshold`
-- Also support overriding field names from CLI/config when reasonable.
+- Do not put LLaDA 2.1 threshold values in `generation_config.json`; that file is only for request-level extra body values.
 
 ## Experiment Outputs
 
