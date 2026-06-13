@@ -94,6 +94,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=60)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--gold-prefix-tokens",
+        type=int,
+        default=0,
+        help=(
+            "Prepend the first N whitespace-separated tokens from the gold answer "
+            "as a correct-solution prefix. Default 0 disables this context."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/gsm8k")
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
@@ -332,7 +341,25 @@ def load_examples(args: argparse.Namespace) -> list[Example]:
     return examples
 
 
-def build_prompt(question: str) -> str:
+def gold_prefix(answer: str, token_count: int) -> str:
+    if token_count <= 0:
+        return ""
+
+    pieces = re.findall(r"\S+\s*", answer)
+    return "".join(pieces[:token_count]).strip()
+
+
+def build_prompt(question: str, answer_prefix: str = "") -> str:
+    if answer_prefix:
+        return (
+            "Solve the following grade-school math problem. "
+            "You are given the beginning of a correct solution. Continue from it, "
+            "then end with a final line exactly like: #### <number>\n\n"
+            f"Problem:\n{question}\n\n"
+            f"Beginning of a correct solution:\n{answer_prefix}\n\n"
+            "Continue the solution:"
+        )
+
     return (
         "Solve the following grade-school math problem. "
         "Show concise reasoning, then end with a final line exactly like: #### <number>\n\n"
@@ -378,6 +405,7 @@ def evaluate_threshold_pair(
     edit_threshold: float,
     temperature: float,
     max_tokens: int,
+    gold_prefix_tokens: int,
     sleep_seconds: float,
     show_progress: bool,
 ) -> dict[str, Any]:
@@ -399,10 +427,12 @@ def evaluate_threshold_pair(
             iterable = progress_bar
 
         for index, example in enumerate(iterable, start=1):
+            answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
+            prompt = build_prompt(example.question, answer_prefix=answer_prefix)
             started = time.perf_counter()
             result = client.chat_completion(
                 model=model,
-                prompt=build_prompt(example.question),
+                prompt=prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 extra_body=extra_body,
@@ -427,6 +457,10 @@ def evaluate_threshold_pair(
                 "edit_threshold": edit_threshold,
                 "question": example.question,
                 "gold_answer": example.gold,
+                "gold_solution": example.answer,
+                "gold_prefix_tokens": gold_prefix_tokens,
+                "gold_prefix": answer_prefix,
+                "prompt": prompt,
                 "predicted_answer": prediction,
                 "correct": is_correct,
                 "latency_seconds": latency,
@@ -458,6 +492,7 @@ def evaluate_threshold_pair(
     summary = {
         "threshold": threshold,
         "edit_threshold": edit_threshold,
+        "gold_prefix_tokens": gold_prefix_tokens,
         "num_examples": total,
         "correct": correct_count,
         "accuracy": correct_count / total if total else 0.0,
@@ -493,6 +528,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
     fieldnames = [
         "threshold",
         "edit_threshold",
+        "gold_prefix_tokens",
         "num_examples",
         "correct",
         "accuracy",
@@ -583,6 +619,7 @@ def main() -> None:
                 edit_threshold=edit_threshold,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                gold_prefix_tokens=args.gold_prefix_tokens,
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
             )
@@ -608,6 +645,7 @@ def main() -> None:
         write_summary(output_dir, summaries)
         progress_write(
             f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
+            f"gold_prefix_tokens={args.gold_prefix_tokens} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
             f"tokens_per_second={summary['tokens_per_second']} "

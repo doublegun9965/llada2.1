@@ -143,6 +143,28 @@ python experiments/gsm8k_threshold_sweep.py \
   --max-tokens 256
 ```
 
+### Correct Context Prefix Experiment
+
+By default, the prompt only contains the GSM8K question. To test whether a correct reasoning prefix improves generation, add `--gold-prefix-tokens`.
+
+Example using the first 40 whitespace-separated tokens from the gold solution:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --gold-prefix-tokens 40
+```
+
+Notes:
+
+- `--gold-prefix-tokens 0` is the default and disables this feature.
+- The script uses whitespace-separated tokens, not the model tokenizer, to avoid adding tokenizer dependencies to the evaluation path.
+- Per-example details include `gold_solution`, `gold_prefix`, and the final `prompt` sent to SGLang.
+
 Outputs are written to a fresh timestamped directory:
 
 ```text
