@@ -122,7 +122,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Directly append the full gold answer after the question, but replace this "
             "fraction of whitespace-separated gold-answer tokens with --gold-noise-token. "
-            "Omit this option to disable. Passing 0.0 appends the clean full gold answer."
+            "The final answer number in the last '#### <number>' line is always masked "
+            "when this option is enabled. Omit this option to disable."
         ),
     )
     parser.add_argument("--gold-noise-token", default="[MASK]")
@@ -392,23 +393,35 @@ def noised_gold_answer(
     noise_token: str,
     seed: int,
     example_id: str,
-) -> tuple[str, list[int]]:
+) -> tuple[str, list[int], list[int]]:
     if ratio < 0 or ratio > 1:
         raise ValueError("--gold-noise-ratio must be between 0.0 and 1.0")
 
-    pieces = re.findall(r"\S+\s*", answer)
+    pieces = list(re.finditer(r"\S+\s*", answer))
     if not pieces:
-        return answer, []
+        return answer, [], []
 
     num_noised = round(len(pieces) * ratio)
     rng = random.Random(stable_seed(seed, example_id))
     indices = sorted(rng.sample(range(len(pieces)), k=num_noised)) if num_noised else []
     index_set = set(indices)
+
+    final_answer_indices: list[int] = []
+    answer_matches = list(ANSWER_RE.finditer(answer))
+    if answer_matches:
+        final_answer_span = answer_matches[-1].span(1)
+        for index, piece_match in enumerate(pieces):
+            token_start, token_end = piece_match.span()
+            if token_start < final_answer_span[1] and final_answer_span[0] < token_end:
+                index_set.add(index)
+                final_answer_indices.append(index)
+
+    all_indices = sorted(index_set)
     noised_pieces = [
-        mask_token_piece(piece, noise_token) if index in index_set else piece
+        mask_token_piece(piece.group(0), noise_token) if index in index_set else piece.group(0)
         for index, piece in enumerate(pieces)
     ]
-    return "".join(noised_pieces).strip(), indices
+    return "".join(noised_pieces).strip(), all_indices, final_answer_indices
 
 
 def build_prompt(
@@ -507,8 +520,9 @@ def evaluate_threshold_pair(
             answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
             noised_answer = None
             noise_indices: list[int] = []
+            final_answer_noise_indices: list[int] = []
             if gold_noise_ratio is not None:
-                noised_answer, noise_indices = noised_gold_answer(
+                noised_answer, noise_indices, final_answer_noise_indices = noised_gold_answer(
                     example.answer,
                     ratio=gold_noise_ratio,
                     noise_token=gold_noise_token,
@@ -557,6 +571,7 @@ def evaluate_threshold_pair(
                 "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
                 "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
                 "gold_noise_indices": noise_indices,
+                "gold_final_answer_noise_indices": final_answer_noise_indices,
                 "gold_noised_solution": noised_answer,
                 "prompt": prompt,
                 "predicted_answer": prediction,

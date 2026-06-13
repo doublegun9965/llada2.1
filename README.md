@@ -200,16 +200,19 @@ python experiments/gsm8k_threshold_sweep.py \
 
 ```text
 {question}
-{完整 gold answer，其中 30% 按空白分割的 token 被替换成 [MASK]}
+{完整 gold answer，其中 30% 按空白分割的 token 被替换成 [MASK]，并且最终答案数字也会强制替换成 [MASK]}
 ```
+
+注意：`--gold-noise-ratio` 控制的是随机加噪比例。为了避免模型直接抄最终答案，GSM8K 里的最后一行 `#### <number>` 中的 `<number>` 会额外强制 mask，即使它没有被随机采中。
 
 常用参数：
 
-- `--gold-noise-ratio 0.0`：拼接干净完整 ground truth。
+- `--gold-noise-ratio 0.0`：不做随机加噪，但最终答案数字仍然会被强制替换。
 - `--gold-noise-ratio 1.0`：把完整 ground truth 的所有 token 都替换。
 - `--gold-noise-token "[MASK]"`：修改替换用的噪声 token。
 - `--gold-noise-seed 0`：控制噪声位置，保证可复现。
 - `--gold-noise-ratio` 和 `--gold-prefix-tokens` 互斥，不能同时开。
+- 每条样本的 details 会记录 `gold_noised_solution`、`gold_noise_indices`、`gold_final_answer_noise_indices` 和最终发送给 SGLang 的 `prompt`。
 
 ### 手动启动 SGLang
 
@@ -555,17 +558,19 @@ This sends:
 
 ```text
 {question}
-{full gold answer with 30% of whitespace-separated tokens replaced by [MASK]}
+{full gold answer with 30% of whitespace-separated tokens replaced by [MASK], and the final answer number also forced to [MASK]}
 ```
+
+`--gold-noise-ratio` controls the random noise fraction. To avoid leaking the label, the `<number>` in the final GSM8K line `#### <number>` is always masked as an extra forced mask, even if random sampling did not select it.
 
 Options:
 
-- `--gold-noise-ratio 0.0` appends the clean full ground truth.
+- `--gold-noise-ratio 0.0` adds no random noise, but still masks the final answer number.
 - `--gold-noise-ratio 1.0` masks every whitespace-separated ground-truth token.
 - `--gold-noise-token "[MASK]"` changes the replacement token.
 - `--gold-noise-seed 0` controls which token positions are noised, so runs are reproducible.
 - `--gold-noise-ratio` and `--gold-prefix-tokens` are mutually exclusive.
-- Per-example details include `gold_noised_solution`, `gold_noise_indices`, `gold_noise_ratio`, and the final `prompt`.
+- Per-example details include `gold_noised_solution`, `gold_noise_indices`, `gold_final_answer_noise_indices`, `gold_noise_ratio`, and the final `prompt`.
 
 Outputs are written to a fresh timestamped directory:
 
