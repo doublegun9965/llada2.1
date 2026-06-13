@@ -300,7 +300,13 @@ def normalize_number(raw: str | None) -> str | None:
     except InvalidOperation:
         return None
 
-    return format(value.normalize(), "f").rstrip("0").rstrip(".") or "0"
+    if value == 0:
+        return "0"
+
+    normalized = format(value.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
 
 
 def extract_answer(text: str) -> str | None:
