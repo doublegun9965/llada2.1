@@ -188,6 +188,38 @@ Notes:
 - The script uses whitespace-separated tokens, not the model tokenizer, to avoid adding tokenizer dependencies to the evaluation path.
 - Per-example details include `gold_solution`, `gold_prefix_style`, `gold_prefix`, and the final `prompt` sent to SGLang.
 
+### Noisy Ground Truth Context Experiment
+
+To directly append the full ground truth after the question, with a fixed fraction of its whitespace-separated tokens replaced by noise, use `--gold-noise-ratio`.
+
+Example replacing 30% of ground-truth tokens with `[MASK]`:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --gold-noise-ratio 0.3
+```
+
+This sends:
+
+```text
+{question}
+{full gold answer with 30% of whitespace-separated tokens replaced by [MASK]}
+```
+
+Options:
+
+- `--gold-noise-ratio 0.0` appends the clean full ground truth.
+- `--gold-noise-ratio 1.0` masks every whitespace-separated ground-truth token.
+- `--gold-noise-token "[MASK]"` changes the replacement token.
+- `--gold-noise-seed 0` controls which token positions are noised, so runs are reproducible.
+- `--gold-noise-ratio` and `--gold-prefix-tokens` are mutually exclusive.
+- Per-example details include `gold_noised_solution`, `gold_noise_indices`, `gold_noise_ratio`, and the final `prompt`.
+
 Outputs are written to a fresh timestamped directory:
 
 ```text

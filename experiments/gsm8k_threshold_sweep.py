@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -113,6 +115,18 @@ def parse_args() -> argparse.Namespace:
             "'direct' sends question plus the gold prefix only."
         ),
     )
+    parser.add_argument(
+        "--gold-noise-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Directly append the full gold answer after the question, but replace this "
+            "fraction of whitespace-separated gold-answer tokens with --gold-noise-token. "
+            "Omit this option to disable. Passing 0.0 appends the clean full gold answer."
+        ),
+    )
+    parser.add_argument("--gold-noise-token", default="[MASK]")
+    parser.add_argument("--gold-noise-seed", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/gsm8k")
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
@@ -359,7 +373,53 @@ def gold_prefix(answer: str, token_count: int) -> str:
     return "".join(pieces[:token_count]).strip()
 
 
-def build_prompt(question: str, answer_prefix: str = "", gold_prefix_style: str = "instructed") -> str:
+def stable_seed(seed: int, example_id: str) -> int:
+    digest = hashlib.sha256(f"{seed}:{example_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def mask_token_piece(piece: str, noise_token: str) -> str:
+    match = re.match(r"(\S+)(\s*)", piece)
+    if not match:
+        return piece
+    return noise_token + match.group(2)
+
+
+def noised_gold_answer(
+    answer: str,
+    *,
+    ratio: float,
+    noise_token: str,
+    seed: int,
+    example_id: str,
+) -> tuple[str, list[int]]:
+    if ratio < 0 or ratio > 1:
+        raise ValueError("--gold-noise-ratio must be between 0.0 and 1.0")
+
+    pieces = re.findall(r"\S+\s*", answer)
+    if not pieces:
+        return answer, []
+
+    num_noised = round(len(pieces) * ratio)
+    rng = random.Random(stable_seed(seed, example_id))
+    indices = sorted(rng.sample(range(len(pieces)), k=num_noised)) if num_noised else []
+    index_set = set(indices)
+    noised_pieces = [
+        mask_token_piece(piece, noise_token) if index in index_set else piece
+        for index, piece in enumerate(pieces)
+    ]
+    return "".join(noised_pieces).strip(), indices
+
+
+def build_prompt(
+    question: str,
+    answer_prefix: str = "",
+    gold_prefix_style: str = "instructed",
+    noisy_gold_answer: str | None = None,
+) -> str:
+    if noisy_gold_answer is not None:
+        return f"{question}\n{noisy_gold_answer}"
+
     if answer_prefix:
         if gold_prefix_style == "direct":
             return f"{question}\n{answer_prefix}"
@@ -420,6 +480,9 @@ def evaluate_threshold_pair(
     max_tokens: int,
     gold_prefix_tokens: int,
     gold_prefix_style: str,
+    gold_noise_ratio: float | None,
+    gold_noise_token: str,
+    gold_noise_seed: int,
     sleep_seconds: float,
     show_progress: bool,
 ) -> dict[str, Any]:
@@ -442,10 +505,21 @@ def evaluate_threshold_pair(
 
         for index, example in enumerate(iterable, start=1):
             answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
+            noised_answer = None
+            noise_indices: list[int] = []
+            if gold_noise_ratio is not None:
+                noised_answer, noise_indices = noised_gold_answer(
+                    example.answer,
+                    ratio=gold_noise_ratio,
+                    noise_token=gold_noise_token,
+                    seed=gold_noise_seed,
+                    example_id=example.example_id,
+                )
             prompt = build_prompt(
                 example.question,
                 answer_prefix=answer_prefix,
                 gold_prefix_style=gold_prefix_style,
+                noisy_gold_answer=noised_answer,
             )
             started = time.perf_counter()
             result = client.chat_completion(
@@ -479,6 +553,11 @@ def evaluate_threshold_pair(
                 "gold_prefix_tokens": gold_prefix_tokens,
                 "gold_prefix_style": gold_prefix_style,
                 "gold_prefix": answer_prefix,
+                "gold_noise_ratio": gold_noise_ratio,
+                "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
+                "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
+                "gold_noise_indices": noise_indices,
+                "gold_noised_solution": noised_answer,
                 "prompt": prompt,
                 "predicted_answer": prediction,
                 "correct": is_correct,
@@ -513,6 +592,9 @@ def evaluate_threshold_pair(
         "edit_threshold": edit_threshold,
         "gold_prefix_tokens": gold_prefix_tokens,
         "gold_prefix_style": gold_prefix_style if gold_prefix_tokens > 0 else "none",
+        "gold_noise_ratio": gold_noise_ratio,
+        "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
+        "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
         "num_examples": total,
         "correct": correct_count,
         "accuracy": correct_count / total if total else 0.0,
@@ -550,6 +632,9 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "edit_threshold",
         "gold_prefix_tokens",
         "gold_prefix_style",
+        "gold_noise_ratio",
+        "gold_noise_token",
+        "gold_noise_seed",
         "num_examples",
         "correct",
         "accuracy",
@@ -574,6 +659,8 @@ def main() -> None:
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
     threshold_pairs = [(threshold, edit) for threshold in thresholds for edit in edit_thresholds]
+    if args.gold_noise_ratio is not None and args.gold_prefix_tokens > 0:
+        raise ValueError("--gold-noise-ratio and --gold-prefix-tokens are mutually exclusive.")
     if args.use_running_server and len(threshold_pairs) != 1:
         raise ValueError(
             "--use-running-server can only evaluate one threshold pair because SGLang "
@@ -642,6 +729,9 @@ def main() -> None:
                 max_tokens=args.max_tokens,
                 gold_prefix_tokens=args.gold_prefix_tokens,
                 gold_prefix_style=args.gold_prefix_style,
+                gold_noise_ratio=args.gold_noise_ratio,
+                gold_noise_token=args.gold_noise_token,
+                gold_noise_seed=args.gold_noise_seed,
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
             )
@@ -669,6 +759,7 @@ def main() -> None:
             f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
             f"gold_prefix_tokens={args.gold_prefix_tokens} "
             f"gold_prefix_style={args.gold_prefix_style if args.gold_prefix_tokens > 0 else 'none'} "
+            f"gold_noise_ratio={args.gold_noise_ratio} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
             f"tokens_per_second={summary['tokens_per_second']} "
