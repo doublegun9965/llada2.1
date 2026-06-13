@@ -103,6 +103,16 @@ def parse_args() -> argparse.Namespace:
             "as a correct-solution prefix. Default 0 disables this context."
         ),
     )
+    parser.add_argument(
+        "--gold-prefix-style",
+        choices=["instructed", "direct"],
+        default="instructed",
+        help=(
+            "Prompt style when --gold-prefix-tokens is enabled. "
+            "'instructed' adds explicit continuation instructions; "
+            "'direct' sends question plus the gold prefix only."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/gsm8k")
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
@@ -349,8 +359,11 @@ def gold_prefix(answer: str, token_count: int) -> str:
     return "".join(pieces[:token_count]).strip()
 
 
-def build_prompt(question: str, answer_prefix: str = "") -> str:
+def build_prompt(question: str, answer_prefix: str = "", gold_prefix_style: str = "instructed") -> str:
     if answer_prefix:
+        if gold_prefix_style == "direct":
+            return f"{question}\n{answer_prefix}"
+
         return (
             "Solve the following grade-school math problem. "
             "You are given the beginning of a correct solution. Continue from it, "
@@ -406,6 +419,7 @@ def evaluate_threshold_pair(
     temperature: float,
     max_tokens: int,
     gold_prefix_tokens: int,
+    gold_prefix_style: str,
     sleep_seconds: float,
     show_progress: bool,
 ) -> dict[str, Any]:
@@ -428,7 +442,11 @@ def evaluate_threshold_pair(
 
         for index, example in enumerate(iterable, start=1):
             answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
-            prompt = build_prompt(example.question, answer_prefix=answer_prefix)
+            prompt = build_prompt(
+                example.question,
+                answer_prefix=answer_prefix,
+                gold_prefix_style=gold_prefix_style,
+            )
             started = time.perf_counter()
             result = client.chat_completion(
                 model=model,
@@ -459,6 +477,7 @@ def evaluate_threshold_pair(
                 "gold_answer": example.gold,
                 "gold_solution": example.answer,
                 "gold_prefix_tokens": gold_prefix_tokens,
+                "gold_prefix_style": gold_prefix_style,
                 "gold_prefix": answer_prefix,
                 "prompt": prompt,
                 "predicted_answer": prediction,
@@ -493,6 +512,7 @@ def evaluate_threshold_pair(
         "threshold": threshold,
         "edit_threshold": edit_threshold,
         "gold_prefix_tokens": gold_prefix_tokens,
+        "gold_prefix_style": gold_prefix_style if gold_prefix_tokens > 0 else "none",
         "num_examples": total,
         "correct": correct_count,
         "accuracy": correct_count / total if total else 0.0,
@@ -529,6 +549,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "threshold",
         "edit_threshold",
         "gold_prefix_tokens",
+        "gold_prefix_style",
         "num_examples",
         "correct",
         "accuracy",
@@ -620,6 +641,7 @@ def main() -> None:
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 gold_prefix_tokens=args.gold_prefix_tokens,
+                gold_prefix_style=args.gold_prefix_style,
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
             )
@@ -646,6 +668,7 @@ def main() -> None:
         progress_write(
             f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
             f"gold_prefix_tokens={args.gold_prefix_tokens} "
+            f"gold_prefix_style={args.gold_prefix_style if args.gold_prefix_tokens > 0 else 'none'} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
             f"tokens_per_second={summary['tokens_per_second']} "

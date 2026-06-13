@@ -159,11 +159,34 @@ python experiments/gsm8k_threshold_sweep.py \
   --gold-prefix-tokens 40
 ```
 
+By default this uses `--gold-prefix-style instructed`, which wraps the prefix with explicit continuation instructions.
+
+For the minimal prompt style, use `direct`:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --gold-prefix-tokens 40 \
+  --gold-prefix-style direct
+```
+
+`direct` sends:
+
+```text
+{question}
+{first 40 whitespace-separated tokens from gold answer}
+```
+
 Notes:
 
 - `--gold-prefix-tokens 0` is the default and disables this feature.
+- `--gold-prefix-style instructed` keeps the more explicit prompt; `--gold-prefix-style direct` only appends the gold prefix after the question.
 - The script uses whitespace-separated tokens, not the model tokenizer, to avoid adding tokenizer dependencies to the evaluation path.
-- Per-example details include `gold_solution`, `gold_prefix`, and the final `prompt` sent to SGLang.
+- Per-example details include `gold_solution`, `gold_prefix_style`, `gold_prefix`, and the final `prompt` sent to SGLang.
 
 Outputs are written to a fresh timestamped directory:
 
