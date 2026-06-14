@@ -227,7 +227,7 @@ python experiments/gsm8k_threshold_sweep.py \
 ```bash
 python experiments/gsm8k_mask_reconstruct.py \
   --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
   --limit 10 \
   --mask-ratio 0.3 \
   --threshold 0.5 \
@@ -264,7 +264,7 @@ Ground truth solution:
 ```bash
 python experiments/gsm8k_mask_reconstruct.py \
   --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
   --limit 10 \
   --mask-ratio 0.3 \
   --threshold 0.5 \
@@ -664,7 +664,7 @@ Example:
 ```bash
 python experiments/gsm8k_mask_reconstruct.py \
   --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
   --limit 10 \
   --mask-ratio 0.3 \
   --threshold 0.5 \
@@ -701,7 +701,7 @@ The default mode is strict reconstruction: it fills `<|mask|>` tokens and leaves
 ```bash
 python experiments/gsm8k_mask_reconstruct.py \
   --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
   --limit 10 \
   --mask-ratio 0.3 \
   --threshold 0.5 \
