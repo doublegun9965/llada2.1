@@ -214,6 +214,65 @@ python experiments/gsm8k_threshold_sweep.py \
 - `--gold-noise-ratio` 和 `--gold-prefix-tokens` 互斥，不能同时开。
 - 每条样本的 details 会记录 `gold_noised_solution`、`gold_noise_indices`、`gold_final_answer_noise_indices` 和最终发送给 SGLang 的 `prompt`。
 
+注意：这个实验仍然走 SGLang chat/completion，所以模型只会在 prompt 后面续写，不会原地替换 prompt 里的 `[MASK]`。如果要真正测试“模型能否还原 ground truth 内部的 mask”，请使用下面的本地模型重建实验。
+
+### 本地模型 Mask 重建实验
+
+这个实验不走 SGLang，而是直接加载 `model/llada2.1` 里的模型代码和权重，对 ground truth solution 内部的 `<|mask|>` token 做原地重建。
+
+运行环境需要能导入 `torch`、`transformers`、`accelerate` 和 `safetensors`；如果当前 SGLang/模型环境已经包含这些依赖，可以直接复用那个环境。
+
+运行示例：
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --block-length 32
+```
+
+它会构造：
+
+```text
+Problem:
+{question}
+
+Ground truth solution:
+{部分 token 被替换成 <|mask|> 的 gold answer}
+```
+
+然后只预测被 mask 的 token，默认不会改动未 mask 的 token。`--mask-ratio` 控制 ground truth solution 中随机 mask 的 tokenizer token 比例。默认会额外强制 mask GSM8K 最后一行 `#### <number>` 里的 `<number>`，避免最终答案直接泄露。
+
+常用参数：
+
+- `--mask-ratio 0.0`：不做随机 mask，但最终答案数字仍然会被强制 mask。
+- `--mask-ratio 1.0`：mask 整个 ground truth solution。
+- `--no-force-final-answer-mask`：关闭最终答案强制 mask。
+- `--threshold 0.5`：控制 mask token 被接受的置信度阈值。
+- `--num-to-transfer 1`：每轮至少填入多少个 mask token。
+- `--attention-mode full`：默认模式，让模型看完整 corrupted 文本来预测 mask；`block-causal` 可用于对照自带 generate 的 block 逻辑。
+- `--device-map auto`：默认按 Transformers 的 device map 加载模型。
+- `--device-map none --device cuda`：不用 device map，直接把模型放到指定设备。
+
+输出目录同样是时间戳目录：
+
+```text
+outputs/gsm8k_mask_reconstruct/run_<timestamp>/
+  summary.json
+  summary.csv
+  details.jsonl
+  details_pretty.md
+```
+
+`details_pretty.md` 更适合人工查看；`details.jsonl` 适合后续统计。主要指标：
+
+- `mask_token_accuracy`：被 mask 的 token 有多少被还原对。
+- `exact_reconstruction_rate`：整条样本所有 mask token 是否全部还原对。
+- `final_answer_accuracy`：重建后的 solution 中 `#### <number>` 是否正确。
+
 ### 手动启动 SGLang
 
 只有你想自己控制 SGLang 进程时才用这个模式。
@@ -571,6 +630,65 @@ Options:
 - `--gold-noise-seed 0` controls which token positions are noised, so runs are reproducible.
 - `--gold-noise-ratio` and `--gold-prefix-tokens` are mutually exclusive.
 - Per-example details include `gold_noised_solution`, `gold_noise_indices`, `gold_final_answer_noise_indices`, `gold_noise_ratio`, and the final `prompt`.
+
+Note: this experiment still uses SGLang chat/completion. The model continues after the prompt; it does not replace `[MASK]` tokens inside the prompt. To test true in-place masked reconstruction, use the local model reconstruction experiment below.
+
+### Local Model Mask Reconstruction Experiment
+
+This experiment does not use SGLang. It directly loads the local model under `model/llada2.1` and reconstructs `<|mask|>` tokens inside the GSM8K gold solution.
+
+The runtime environment must be able to import `torch`, `transformers`, `accelerate`, and `safetensors`. If the current SGLang/model environment already has them, reuse that environment.
+
+Example:
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --block-length 32
+```
+
+The script builds:
+
+```text
+Problem:
+{question}
+
+Ground truth solution:
+{gold answer with some tokenizer tokens replaced by <|mask|>}
+```
+
+It predicts only masked tokens by default and leaves unmasked tokens unchanged. `--mask-ratio` controls the random tokenizer-token mask ratio inside the gold solution. By default, the final GSM8K answer number in `#### <number>` is also force-masked to avoid direct label leakage.
+
+Useful options:
+
+- `--mask-ratio 0.0` adds no random masks, but still force-masks the final answer number.
+- `--mask-ratio 1.0` masks the full gold solution.
+- `--no-force-final-answer-mask` disables the final-answer forced mask.
+- `--threshold 0.5` controls the confidence threshold for accepting mask predictions.
+- `--num-to-transfer 1` controls the minimum number of mask tokens filled per iteration.
+- `--attention-mode full` is the default and lets the model attend to the whole corrupted text; `block-causal` can be used to compare with the local generation-style block logic.
+- `--device-map auto` uses Transformers device mapping.
+- `--device-map none --device cuda` moves the model to one explicit device.
+
+Outputs are timestamped:
+
+```text
+outputs/gsm8k_mask_reconstruct/run_<timestamp>/
+  summary.json
+  summary.csv
+  details.jsonl
+  details_pretty.md
+```
+
+Main metrics:
+
+- `mask_token_accuracy`: token-level reconstruction accuracy on masked positions.
+- `exact_reconstruction_rate`: whether every masked token in an example was reconstructed exactly.
+- `final_answer_accuracy`: whether the reconstructed `#### <number>` answer is correct.
 
 Outputs are written to a fresh timestamped directory:
 

@@ -33,6 +33,8 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 ## SGLang and LLaDA 2.1
 
 - Inference is expected to go through an SGLang OpenAI-compatible API.
+- SGLang chat/completion treats the prompt as fixed context and continues after it; it does not replace mask tokens inside the prompt.
+- For experiments that require in-place reconstruction of masked ground-truth/reasoning tokens, use a local model forward/denoising script instead of SGLang.
 - For SGLang `0.5.12.post1`, LLaDA 2.1 `JointThreshold` parameters are server-startup DLLM algorithm config values, not OpenAI request-body values.
 - Threshold sweeps must generate a YAML file and restart SGLang for each threshold pair using `--dllm-algorithm JointThreshold --dllm-algorithm-config <path>`.
 - Current SGLang `JointThreshold` YAML keys are:
