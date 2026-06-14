@@ -37,6 +37,69 @@ GSM8K 数据可以放在任意路径，只要运行时用 `--input-jsonl` 指定
 {"question": "...", "answer": "... #### 42"}
 ```
 
+### 实验命令速查
+
+自动启动 SGLang，跑 GSM8K 阈值 sweep：
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.4,0.5,0.6 \
+  --edit-thresholds 0.0,0.2,0.4 \
+  --max-tokens 512
+```
+
+SGLang 续写模式，给正确答案前缀：
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --gold-prefix-tokens 40 \
+  --gold-prefix-style direct
+```
+
+SGLang 续写模式，拼接加噪 ground truth：
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --gold-noise-ratio 0.3
+```
+
+本地模型 strict mask reconstruction，只填 `<|mask|>`：
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --block-length 32
+```
+
+本地模型 reconstruction + editing，填 mask 并允许高置信度编辑非 mask token：
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --editing-threshold 0.8 \
+  --max-edit-steps 16
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
