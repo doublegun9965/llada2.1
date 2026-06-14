@@ -252,10 +252,30 @@ Ground truth solution:
 - `--mask-ratio 1.0`：mask 整个 ground truth solution。
 - `--no-force-final-answer-mask`：关闭最终答案强制 mask。
 - `--threshold 0.5`：控制 mask token 被接受的置信度阈值。
+- `--editing-threshold 0.8`：开启 reconstruction + editing，允许高置信度改写 ground truth solution 里未 mask 的 token；不传时只填 mask，不编辑其它 token。
+- `--max-edit-steps 16`：所有 mask 填完后，最多继续做多少轮 editing refinement。
 - `--num-to-transfer 1`：每轮至少填入多少个 mask token。
 - `--attention-mode full`：默认模式，让模型看完整 corrupted 文本来预测 mask；`block-causal` 可用于对照自带 generate 的 block 逻辑。
 - `--device-map auto`：默认按 Transformers 的 device map 加载模型。
 - `--device-map none --device cuda`：不用 device map，直接把模型放到指定设备。
+
+默认模式是 strict reconstruction：只填 `<|mask|>`，不改其它 token。要跑更接近 LLaDA2.1 原始 `generate()` 的 reconstruction + editing：
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --editing-threshold 0.8 \
+  --max-edit-steps 16
+```
+
+这里两个阈值含义不同：
+
+- `--threshold`：控制 `<|mask|>` 位置的预测 token 何时被接受。
+- `--editing-threshold`：控制非 mask token 是否允许被模型改写。脚本只允许编辑 `Ground truth solution` 区间，不会改 question/prompt 前缀。
 
 输出目录同样是时间戳目录：
 
@@ -669,10 +689,30 @@ Useful options:
 - `--mask-ratio 1.0` masks the full gold solution.
 - `--no-force-final-answer-mask` disables the final-answer forced mask.
 - `--threshold 0.5` controls the confidence threshold for accepting mask predictions.
+- `--editing-threshold 0.8` enables reconstruction + editing, allowing high-confidence rewrites of unmasked tokens inside the gold solution. Omit it for strict mask-only reconstruction.
+- `--max-edit-steps 16` controls how many extra editing refinement steps can run after all masks are filled.
 - `--num-to-transfer 1` controls the minimum number of mask tokens filled per iteration.
 - `--attention-mode full` is the default and lets the model attend to the whole corrupted text; `block-causal` can be used to compare with the local generation-style block logic.
 - `--device-map auto` uses Transformers device mapping.
 - `--device-map none --device cuda` moves the model to one explicit device.
+
+The default mode is strict reconstruction: it fills `<|mask|>` tokens and leaves other tokens unchanged. To run reconstruction + editing, closer to LLaDA2.1's original `generate()` behavior:
+
+```bash
+python experiments/gsm8k_mask_reconstruct.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/llada2.1/model/llada2.1 \
+  --limit 10 \
+  --mask-ratio 0.3 \
+  --threshold 0.5 \
+  --editing-threshold 0.8 \
+  --max-edit-steps 16
+```
+
+The two thresholds have different roles:
+
+- `--threshold` controls when predicted tokens are accepted at `<|mask|>` positions.
+- `--editing-threshold` controls whether non-mask tokens may be rewritten. The script only edits the `Ground truth solution` span, not the question/prompt prefix.
 
 Outputs are timestamped:
 

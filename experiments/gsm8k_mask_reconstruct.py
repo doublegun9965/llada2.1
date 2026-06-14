@@ -46,6 +46,7 @@ class MaskedInput:
     input_ids: Any
     masked_input_ids: Any
     target_mask: Any
+    answer_mask: Any
     answer_token_indices: list[int]
     masked_token_indices: list[int]
     forced_final_answer_indices: list[int]
@@ -75,6 +76,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--block-length", type=int, default=32)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--editing-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Enable reconstruction + editing. Non-mask tokens inside the gold solution "
+            "may be rewritten when the sampled token confidence is above this value. "
+            "Omit for strict reconstruction."
+        ),
+    )
+    parser.add_argument(
+        "--max-edit-steps",
+        type=int,
+        default=16,
+        help="Maximum extra refinement steps after all mask tokens are filled.",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
@@ -232,6 +249,8 @@ def build_masked_input(
 
     masked_input_ids = input_ids.clone()
     target_mask = input_ids.new_zeros(input_ids.shape, dtype=bool)
+    answer_mask = input_ids.new_zeros(input_ids.shape, dtype=bool)
+    answer_mask[0, answer_token_indices] = True
     if masked_token_indices:
         masked_input_ids[0, masked_token_indices] = tokenizer.mask_token_id
         target_mask[0, masked_token_indices] = True
@@ -242,6 +261,7 @@ def build_masked_input(
         input_ids=input_ids,
         masked_input_ids=masked_input_ids,
         target_mask=target_mask,
+        answer_mask=answer_mask,
         answer_token_indices=answer_token_indices,
         masked_token_indices=masked_token_indices,
         forced_final_answer_indices=forced_final_answer_indices,
@@ -308,16 +328,19 @@ def reconstruct_masked_tokens(
     model: Any,
     masked_input_ids: Any,
     target_mask: Any,
+    answer_mask: Any,
     mask_id: int,
     eos_id: int,
     block_length: int,
     threshold: float,
+    editing_threshold: float | None,
+    max_edit_steps: int,
     temperature: float,
     top_p: float | None,
     top_k: int | None,
     num_to_transfer: int,
     attention_mode: str,
-) -> tuple[Any, int]:
+) -> tuple[Any, int, list[int]]:
     try:
         import torch
     except ModuleNotFoundError as exc:
@@ -333,13 +356,17 @@ def reconstruct_masked_tokens(
     device = model_device(model)
     input_ids = masked_input_ids.to(device)
     target_mask = target_mask.to(device)
+    answer_mask = answer_mask.to(device)
     if attention_mode == "full":
         return reconstruct_masked_tokens_full_attention(
             model=model,
             input_ids=input_ids,
             target_mask=target_mask,
+            answer_mask=answer_mask,
             mask_id=mask_id,
             threshold=threshold,
+            editing_threshold=editing_threshold,
+            max_edit_steps=max_edit_steps,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -356,6 +383,8 @@ def reconstruct_masked_tokens(
     x[:, :seq_len] = input_ids
     full_target_mask = torch.zeros((1, total_length), dtype=torch.bool, device=device)
     full_target_mask[:, :seq_len] = target_mask
+    full_answer_mask = torch.zeros((1, total_length), dtype=torch.bool, device=device)
+    full_answer_mask[:, :seq_len] = answer_mask
 
     block_mask = torch.tril(torch.ones(num_blocks, num_blocks, device=device))
     attention_mask = (
@@ -378,10 +407,17 @@ def reconstruct_masked_tokens(
             current_window_end = block_end
             cur_attn_mask = attention_mask[:, :, :current_window_end, :current_window_end]
             cur_position_ids = position_ids[:, :current_window_end]
+            block_answer_mask = full_answer_mask[:, block_start:block_end]
 
+            edit_steps = 0
             while True:
+                old_block_tokens = x[:, block_start:block_end].clone()
                 active_block_mask = block_target_mask & (x[:, block_start:block_end] == mask_id)
                 if not active_block_mask.any():
+                    edit_steps += 1
+                if not active_block_mask.any() and editing_threshold is None:
+                    break
+                if edit_steps > max_edit_steps:
                     break
 
                 cur_x = x[:, :current_window_end]
@@ -401,19 +437,39 @@ def reconstruct_masked_tokens(
                 confidence = torch.where(active_block_mask, sampled_probs, -torch.inf)
                 high_confidence = (confidence[0] > threshold) & active_block_mask[0]
                 transfer_mask = torch.zeros_like(active_block_mask)
-                if high_confidence.sum().item() >= num_to_transfer:
-                    transfer_mask[0] = high_confidence
-                else:
-                    available = int(active_block_mask.sum().item())
-                    _, selected = torch.topk(confidence[0], k=min(num_to_transfer, available))
-                    transfer_mask[0, selected] = True
+                available = int(active_block_mask.sum().item())
+                if available > 0:
+                    if high_confidence.sum().item() >= num_to_transfer:
+                        transfer_mask[0] = high_confidence
+                    else:
+                        _, selected = torch.topk(
+                            confidence[0], k=min(num_to_transfer, available)
+                        )
+                        transfer_mask[0, selected] = True
 
                 block_tokens = x[:, block_start:block_end]
                 block_tokens[transfer_mask] = sampled_tokens[transfer_mask]
+
+                editing_transfer_mask = torch.zeros_like(active_block_mask)
+                if editing_threshold is not None:
+                    editable_positions = block_answer_mask & ~active_block_mask
+                    editing_confidence = torch.where(editable_positions, sampled_probs, -torch.inf)
+                    token_changed = sampled_tokens != old_block_tokens
+                    editing_transfer_mask = (
+                        (editing_confidence > editing_threshold)
+                        & editable_positions
+                        & token_changed
+                    )
+                    block_tokens[editing_transfer_mask] = sampled_tokens[editing_transfer_mask]
+
                 x[:, block_start:block_end] = block_tokens
                 iterations += 1
+                if not active_block_mask.any() and not editing_transfer_mask.any():
+                    break
 
-    return x[:, :seq_len], iterations
+    edited_mask = (x[:, :seq_len] != input_ids) & answer_mask & ~target_mask
+    edited_indices = edited_mask[0].nonzero(as_tuple=True)[0].tolist()
+    return x[:, :seq_len], iterations, [int(index) for index in edited_indices]
 
 
 def reconstruct_masked_tokens_full_attention(
@@ -421,21 +477,30 @@ def reconstruct_masked_tokens_full_attention(
     model: Any,
     input_ids: Any,
     target_mask: Any,
+    answer_mask: Any,
     mask_id: int,
     threshold: float,
+    editing_threshold: float | None,
+    max_edit_steps: int,
     temperature: float,
     top_p: float | None,
     top_k: int | None,
     num_to_transfer: int,
-) -> tuple[Any, int]:
+) -> tuple[Any, int, list[int]]:
     import torch
 
     x = input_ids.clone()
     iterations = 0
+    edit_steps = 0
     with torch.no_grad():
         while True:
+            old_tokens = x.clone()
             active_mask = target_mask & (x == mask_id)
             if not active_mask.any():
+                edit_steps += 1
+            if not active_mask.any() and editing_threshold is None:
+                break
+            if edit_steps > max_edit_steps:
                 break
 
             outputs = model.forward(x)
@@ -449,17 +514,35 @@ def reconstruct_masked_tokens_full_attention(
             confidence = torch.where(active_mask, sampled_probs, -torch.inf)
             high_confidence = (confidence[0] > threshold) & active_mask[0]
             transfer_mask = torch.zeros_like(active_mask)
-            if high_confidence.sum().item() >= num_to_transfer:
-                transfer_mask[0] = high_confidence
-            else:
-                available = int(active_mask.sum().item())
-                _, selected = torch.topk(confidence[0], k=min(num_to_transfer, available))
-                transfer_mask[0, selected] = True
+            available = int(active_mask.sum().item())
+            if available > 0:
+                if high_confidence.sum().item() >= num_to_transfer:
+                    transfer_mask[0] = high_confidence
+                else:
+                    _, selected = torch.topk(confidence[0], k=min(num_to_transfer, available))
+                    transfer_mask[0, selected] = True
 
             x[transfer_mask] = sampled_tokens[transfer_mask]
-            iterations += 1
 
-    return x, iterations
+            editing_transfer_mask = torch.zeros_like(active_mask)
+            if editing_threshold is not None:
+                editable_positions = answer_mask & ~active_mask
+                editing_confidence = torch.where(editable_positions, sampled_probs, -torch.inf)
+                token_changed = sampled_tokens != old_tokens
+                editing_transfer_mask = (
+                    (editing_confidence > editing_threshold)
+                    & editable_positions
+                    & token_changed
+                )
+                x[editing_transfer_mask] = sampled_tokens[editing_transfer_mask]
+
+            iterations += 1
+            if not active_mask.any() and not editing_transfer_mask.any():
+                break
+
+    edited_mask = (x != input_ids) & answer_mask & ~target_mask
+    edited_indices = edited_mask[0].nonzero(as_tuple=True)[0].tolist()
+    return x, iterations, [int(index) for index in edited_indices]
 
 
 def decode_answer_slice(tokenizer: Any, token_ids: Any, answer_token_indices: list[int]) -> str:
@@ -474,8 +557,11 @@ def write_summary_csv(path: Path, summaries: list[dict[str, Any]]) -> None:
     preferred_fieldnames = [
         "mask_ratio",
         "attention_mode",
+        "editing_threshold",
+        "max_edit_steps",
         "num_examples",
         "num_masked_tokens",
+        "num_edited_tokens",
         "mask_token_accuracy",
         "exact_reconstruction_rate",
         "final_answer_accuracy",
@@ -509,6 +595,7 @@ def main() -> None:
 
     total_masked = 0
     total_correct_masked = 0
+    total_edited_tokens = 0
     exact_count = 0
     final_answer_correct_count = 0
     total_latency = 0.0
@@ -536,14 +623,17 @@ def main() -> None:
             )
 
             started = time.perf_counter()
-            reconstructed_ids, iterations = reconstruct_masked_tokens(
+            reconstructed_ids, iterations, edited_token_indices = reconstruct_masked_tokens(
                 model=model,
                 masked_input_ids=masked.masked_input_ids,
                 target_mask=masked.target_mask,
+                answer_mask=masked.answer_mask,
                 mask_id=mask_id,
                 eos_id=eos_id,
                 block_length=args.block_length,
                 threshold=args.threshold,
+                editing_threshold=args.editing_threshold,
+                max_edit_steps=args.max_edit_steps,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 top_k=args.top_k,
@@ -580,6 +670,7 @@ def main() -> None:
 
             total_masked += masked_count
             total_correct_masked += correct_count
+            total_edited_tokens += len(edited_token_indices)
             exact_count += int(exact)
             final_answer_correct_count += int(final_answer_correct)
             total_latency += latency
@@ -605,6 +696,10 @@ def main() -> None:
                 "latency_seconds": latency,
                 "iterations": iterations,
                 "attention_mode": args.attention_mode,
+                "editing_threshold": args.editing_threshold,
+                "max_edit_steps": args.max_edit_steps,
+                "edited_token_indices": edited_token_indices,
+                "num_edited_tokens": len(edited_token_indices),
                 "original_text": masked.text,
                 "masked_text": masked.masked_text,
                 "reconstructed_text": reconstructed_text,
@@ -620,6 +715,7 @@ def main() -> None:
                 f"- mask_token_accuracy: `{record['mask_token_accuracy']:.4f}` "
                 f"({correct_count}/{masked_count})\n\n"
             )
+            pretty_handle.write(f"- num_edited_tokens: `{len(edited_token_indices)}`\n\n")
             pretty_handle.write("### Masked Text\n\n```text\n")
             pretty_handle.write(masked.masked_text)
             pretty_handle.write("\n```\n\n### Reconstructed Answer Slice\n\n```text\n")
@@ -640,6 +736,7 @@ def main() -> None:
         "input_jsonl": args.input_jsonl,
         "num_examples": num_examples,
         "num_masked_tokens": total_masked,
+        "num_edited_tokens": total_edited_tokens,
         "mask_token_accuracy": total_correct_masked / total_masked if total_masked else 0.0,
         "exact_reconstruction_rate": exact_count / num_examples if num_examples else 0.0,
         "final_answer_accuracy": (
@@ -649,6 +746,8 @@ def main() -> None:
         "masked_tokens_per_second": total_masked / total_latency if total_latency else None,
         "block_length": args.block_length,
         "threshold": args.threshold,
+        "editing_threshold": args.editing_threshold,
+        "max_edit_steps": args.max_edit_steps,
         "temperature": args.temperature,
         "top_p": args.top_p,
         "top_k": args.top_k,
