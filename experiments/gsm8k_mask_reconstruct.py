@@ -471,7 +471,7 @@ def decode_answer_slice(tokenizer: Any, token_ids: Any, answer_token_indices: li
 
 
 def write_summary_csv(path: Path, summaries: list[dict[str, Any]]) -> None:
-    fieldnames = [
+    preferred_fieldnames = [
         "mask_ratio",
         "attention_mode",
         "num_examples",
@@ -482,6 +482,12 @@ def write_summary_csv(path: Path, summaries: list[dict[str, Any]]) -> None:
         "avg_latency_seconds",
         "masked_tokens_per_second",
     ]
+    fieldnames = list(preferred_fieldnames)
+    for summary in summaries:
+        for key in summary:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
