@@ -210,7 +210,10 @@ def build_masked_input(
     if tokenizer.mask_token_id is None:
         raise ValueError("Tokenizer does not define mask_token_id.")
 
-    prefix = f"Problem:\n{question}\n\nGround truth solution:\n"
+    prefix = (
+        "Show concise reasoning, then end with a final line exactly like: #### <number>\n\n"
+        f"Problem:\n{question}\n\nGround truth solution:\n"
+    )
     text = prefix + answer
     answer_start = len(prefix)
     answer_end = len(text)
