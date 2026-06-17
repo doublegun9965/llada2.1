@@ -149,8 +149,8 @@ def main() -> None:
     )
     latency = time.perf_counter() - started
 
-    generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-    generated_text_with_special_tokens = tokenizer.decode(
+    generated_continuation_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    generated_continuation_text_with_special_tokens = tokenizer.decode(
         generated_ids[0], skip_special_tokens=False
     )
     model_input_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
@@ -169,8 +169,11 @@ def main() -> None:
         "input_tokens": int(input_ids.shape[1]),
         "generated_token_count": int(generated_ids.shape[1]),
         "generated_tokens": int(generated_ids.shape[1]),
-        "generated_text": generated_text,
-        "generated_text_with_special_tokens": generated_text_with_special_tokens,
+        "generated_continuation_text": generated_continuation_text,
+        "generated_continuation_text_with_special_tokens": (
+            generated_continuation_text_with_special_tokens
+        ),
+        "generated_text": generated_continuation_text,
         "latency_seconds": latency,
         "gen_length": args.gen_length,
         "block_length": args.block_length,
@@ -197,10 +200,10 @@ def main() -> None:
                 masked_prompt,
                 "",
                 "## Generated Text",
-                generated_text,
+                generated_continuation_text,
                 "",
                 "## Generated Text With Special Tokens",
-                generated_text_with_special_tokens,
+                generated_continuation_text_with_special_tokens,
                 "",
             ]
         ),
