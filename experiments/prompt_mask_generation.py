@@ -92,12 +92,17 @@ def with_added_masks(
 
 def build_input_ids(tokenizer: Any, prompt: str, use_chat_template: bool) -> Any:
     if use_chat_template:
-        return tokenizer.apply_chat_template(
+        encoded = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             add_generation_prompt=True,
             tokenize=True,
             return_tensors="pt",
         )
+        if hasattr(encoded, "shape"):
+            return encoded
+        if isinstance(encoded, dict) and "input_ids" in encoded:
+            return encoded["input_ids"]
+        raise TypeError(f"Unexpected apply_chat_template return type: {type(encoded)!r}")
     return tokenizer(prompt, add_special_tokens=False, return_tensors="pt")["input_ids"]
 
 
@@ -145,6 +150,9 @@ def main() -> None:
     latency = time.perf_counter() - started
 
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    generated_text_with_special_tokens = tokenizer.decode(
+        generated_ids[0], skip_special_tokens=False
+    )
     model_input_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
 
     result = {
@@ -159,8 +167,10 @@ def main() -> None:
         "use_chat_template": not args.no_chat_template,
         "model_input_text": model_input_text,
         "input_tokens": int(input_ids.shape[1]),
+        "generated_token_count": int(generated_ids.shape[1]),
         "generated_tokens": int(generated_ids.shape[1]),
         "generated_text": generated_text,
+        "generated_text_with_special_tokens": generated_text_with_special_tokens,
         "latency_seconds": latency,
         "gen_length": args.gen_length,
         "block_length": args.block_length,
@@ -188,6 +198,9 @@ def main() -> None:
                 "",
                 "## Generated Text",
                 generated_text,
+                "",
+                "## Generated Text With Special Tokens",
+                generated_text_with_special_tokens,
                 "",
             ]
         ),
