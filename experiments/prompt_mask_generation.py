@@ -100,8 +100,10 @@ def build_input_ids(tokenizer: Any, prompt: str, use_chat_template: bool) -> Any
         )
         if hasattr(encoded, "shape"):
             return encoded
-        if isinstance(encoded, dict) and "input_ids" in encoded:
+        try:
             return encoded["input_ids"]
+        except (KeyError, TypeError):
+            pass
         raise TypeError(f"Unexpected apply_chat_template return type: {type(encoded)!r}")
     return tokenizer(prompt, add_special_tokens=False, return_tensors="pt")["input_ids"]
 
