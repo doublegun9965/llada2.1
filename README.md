@@ -100,6 +100,19 @@ python experiments/gsm8k_mask_reconstruct.py \
   --max-edit-steps 16
 ```
 
+本地模型 prompt mask generation，在 prompt 尾部追加若干 mask 后生成：
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt "Solve 16 - 3 - 4, then multiply the result by 2." \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 8 \
+  --mask-position tail \
+  --gen-length 256 \
+  --threshold 0.5 \
+  --editing-threshold 0.0
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
@@ -355,6 +368,62 @@ outputs/gsm8k_mask_reconstruct/run_<timestamp>/
 - `mask_token_accuracy`：被 mask 的 token 有多少被还原对。
 - `exact_reconstruction_rate`：整条样本所有 mask token 是否全部还原对。
 - `final_answer_accuracy`：重建后的 solution 中 `#### <number>` 是否正确。
+
+### Prompt 头尾 Mask 生成实验
+
+这个实验不走 SGLang，直接用本地 LLaDA2.1 `generate()`。它会把命令行给出的 prompt 加上若干 `<|mask|>`，然后观察这些 mask 对后续生成的影响。
+
+尾部加 8 个 mask：
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt "Solve 16 - 3 - 4, then multiply the result by 2." \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 8 \
+  --mask-position tail \
+  --gen-length 256 \
+  --threshold 0.5 \
+  --editing-threshold 0.0
+```
+
+头部加 8 个 mask：
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt "Solve 16 - 3 - 4, then multiply the result by 2." \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 8 \
+  --mask-position head \
+  --gen-length 256 \
+  --threshold 0.5 \
+  --editing-threshold 0.0
+```
+
+长 prompt 可以放文件里：
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt-file /mnt/workspace/data/my_prompt.txt \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 16 \
+  --mask-position tail
+```
+
+常用参数：
+
+- `--mask-count 0`：默认不加 mask。
+- `--mask-position head|tail`：指定 mask 加在 prompt 前面还是后面。
+- `--gen-length 256`：控制生成长度。
+- `--threshold` 和 `--editing-threshold`：直接传给本地模型 `generate()`。
+- 默认使用 tokenizer chat template；如果想直接 token 化原始文本，传 `--no-chat-template`。
+
+输出目录：
+
+```text
+outputs/prompt_mask_generation/run_<timestamp>/
+  result.json
+  result.txt
+```
 
 ### 手动启动 SGLang
 
@@ -792,6 +861,62 @@ Main metrics:
 - `mask_token_accuracy`: token-level reconstruction accuracy on masked positions.
 - `exact_reconstruction_rate`: whether every masked token in an example was reconstructed exactly.
 - `final_answer_accuracy`: whether the reconstructed `#### <number>` answer is correct.
+
+### Prompt Head/Tail Mask Generation Experiment
+
+This experiment does not use SGLang. It calls the local LLaDA2.1 `generate()` method after adding `<|mask|>` tokens before or after a command-line prompt, so you can observe how head/tail masks affect generation.
+
+Add 8 masks to the prompt tail:
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt "Solve 16 - 3 - 4, then multiply the result by 2." \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 8 \
+  --mask-position tail \
+  --gen-length 256 \
+  --threshold 0.5 \
+  --editing-threshold 0.0
+```
+
+Add 8 masks to the prompt head:
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt "Solve 16 - 3 - 4, then multiply the result by 2." \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 8 \
+  --mask-position head \
+  --gen-length 256 \
+  --threshold 0.5 \
+  --editing-threshold 0.0
+```
+
+For long prompts, use a file:
+
+```bash
+python experiments/prompt_mask_generation.py \
+  --prompt-file /mnt/workspace/data/my_prompt.txt \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --mask-count 16 \
+  --mask-position tail
+```
+
+Useful options:
+
+- `--mask-count 0` adds no masks.
+- `--mask-position head|tail` controls whether masks are added before or after the prompt.
+- `--gen-length 256` controls generation length.
+- `--threshold` and `--editing-threshold` are passed through to local model `generate()`.
+- The script uses the tokenizer chat template by default. Pass `--no-chat-template` to tokenize raw text directly.
+
+Outputs are timestamped:
+
+```text
+outputs/prompt_mask_generation/run_<timestamp>/
+  result.json
+  result.txt
+```
 
 Outputs are written to a fresh timestamped directory:
 
