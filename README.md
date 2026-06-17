@@ -113,6 +113,17 @@ python experiments/prompt_mask_generation.py \
   --editing-threshold 0.0
 ```
 
+SGLang GSM8K prompt mask 对比实验，固定 `threshold=0.5`、`edit_threshold=0.0`，默认比较不加 mask、头部 8/4 个 mask、尾部 4/8 个 mask：
+
+```bash
+python experiments/gsm8k_prompt_mask_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --threshold 0.5 \
+  --edit-threshold 0.0 \
+  --max-tokens 512
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
@@ -916,6 +927,50 @@ Outputs are timestamped:
 outputs/prompt_mask_generation/run_<timestamp>/
   result.json
   result.txt
+```
+
+### SGLang GSM8K Prompt Mask Sweep
+
+This experiment uses SGLang, starts one server with `threshold=0.5` and `edit_threshold=0.0` by default, then compares:
+
+```text
+no_mask
+head_8
+head_4
+tail_4
+tail_8
+```
+
+Run:
+
+```bash
+python experiments/gsm8k_prompt_mask_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --threshold 0.5 \
+  --edit-threshold 0.0 \
+  --max-tokens 512
+```
+
+To change the mask variants:
+
+```bash
+--variants none,head:8,head:4,tail:4,tail:8
+```
+
+Outputs:
+
+```text
+outputs/gsm8k_prompt_mask/run_<timestamp>/
+  summary.csv
+  summary.json
+  details_no_mask.jsonl
+  details_head_8.jsonl
+  details_head_4.jsonl
+  details_tail_4.jsonl
+  details_tail_8.jsonl
+  dllm_configs/
+  server_logs/
 ```
 
 Outputs are written to a fresh timestamped directory:
