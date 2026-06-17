@@ -124,6 +124,16 @@ python experiments/gsm8k_prompt_mask_sweep.py \
   --max-tokens 512
 ```
 
+对比多份 `details_*.jsonl`，只输出至少有一个实验答错或缺失的题目，生成方便阅读的 Markdown：
+
+```bash
+python scripts/compare_gsm8k_details.py \
+  outputs/gsm8k_prompt_mask/run_<timestamp>/details_no_mask.jsonl \
+  outputs/gsm8k_prompt_mask/run_<timestamp>/details_head_4.jsonl \
+  outputs/gsm8k_prompt_mask/run_<timestamp>/details_tail_4.jsonl \
+  --label-from variant
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
