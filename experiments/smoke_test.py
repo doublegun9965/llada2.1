@@ -16,8 +16,10 @@ from llada_experiments import SGLangClient, load_settings
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a minimal SGLang smoke test.")
-    parser.add_argument("--prompt", default=None, help="Single prompt to run.")
-    parser.add_argument("--input-jsonl", default=None, help="JSONL file with id and prompt fields.")
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument("--prompt", default=None, help="Single prompt to run.")
+    input_group.add_argument("--prompt-file", default=None, help="UTF-8 text file containing one prompt.")
+    input_group.add_argument("--input-jsonl", default=None, help="JSONL file with id and prompt fields.")
     parser.add_argument(
         "--generation-config",
         default=None,
@@ -35,6 +37,10 @@ def parse_args() -> argparse.Namespace:
 def load_prompts(args: argparse.Namespace) -> list[dict[str, str]]:
     if args.prompt:
         return [{"id": "cli_prompt", "prompt": args.prompt}]
+
+    if args.prompt_file:
+        prompt_path = Path(args.prompt_file)
+        return [{"id": prompt_path.stem, "prompt": prompt_path.read_text(encoding="utf-8").strip()}]
 
     input_jsonl = Path(args.input_jsonl or "prompts/smoke.jsonl")
     rows: list[dict[str, str]] = []

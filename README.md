@@ -334,8 +334,10 @@ trace_max_events: 200
 
 ```bash
 bash sglang_server/start_sglang.sh
-python experiments/smoke_test.py --prompt "Janet's ducks lay 16 eggs per day. How much money does she make?"
+python experiments/smoke_test.py --prompt-file /mnt/workspace/data/my_prompt.txt
 ```
+
+`smoke_test.py` 调用的是 OpenAI-compatible `/v1/chat/completions`，会以 `messages=[{"role": "user", "content": prompt}]` 的方式发给 SGLang，因此 chat template 在 SGLang 服务端应用。
 
 4. 把 trace 渲染成 Markdown：
 
@@ -853,7 +855,16 @@ Apply only the trace patch when you want to inspect server-side M2T/T2T events:
 scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
 ```
 
-Then set `trace_path` in `sglang_server/dllm_algorithm_config.local.yaml`, restart SGLang, run a request, and render Markdown:
+Then set `trace_path` in `sglang_server/dllm_algorithm_config.local.yaml`, restart SGLang, and run one chat request from a text prompt file:
+
+```bash
+bash sglang_server/start_sglang.sh
+python experiments/smoke_test.py --prompt-file /mnt/workspace/data/my_prompt.txt
+```
+
+`smoke_test.py` uses `/v1/chat/completions`, so SGLang applies the model chat template from the user message.
+
+Render Markdown:
 
 ```bash
 python scripts/render_sglang_dllm_trace.py \
@@ -1219,8 +1230,10 @@ python experiments/gsm8k_threshold_sweep.py \
 After SGLang is running:
 
 ```bash
-python experiments/smoke_test.py --prompt "say hello"
+python experiments/smoke_test.py --prompt-file /mnt/workspace/data/my_prompt.txt
 ```
+
+`smoke_test.py` uses `/v1/chat/completions`, so SGLang applies the model chat template from the user message.
 
 If the server is not running, this will fail with `Connection refused`.
 
