@@ -525,22 +525,45 @@ def write_markdown(
         f"- Late ratio: `{summary['late_ratio']}`",
         f"- Schedule: `{summary['schedule']}`",
         f"- Latency seconds: `{summary['latency_seconds']:.4f}`",
-        "",
-        "## Prompt",
-        "",
-        "```text",
-        summary["masked_prompt"],
-        "```",
-        "",
-        "## Final Generated Text",
-        "",
-        "```text",
-        summary["generated_text"],
-        "```",
-        "",
-        "## Iterations",
-        "",
     ]
+    if "gold_answer" in summary:
+        lines.extend(
+            [
+                f"- Gold answer: `{summary.get('gold_answer')}`",
+                f"- Predicted answer: `{summary.get('predicted_answer')}`",
+                f"- Correct: `{summary.get('correct')}`",
+            ]
+        )
+    if "question" in summary:
+        lines.extend(
+            [
+                "",
+                "## Question",
+                "",
+                "```text",
+                str(summary["question"]),
+                "```",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Prompt",
+            "",
+            "```text",
+            summary["masked_prompt"],
+            "```",
+            "",
+            "## Final Generated Text",
+            "",
+            "```text",
+            summary["generated_text"],
+            "```",
+            "",
+            "## Iterations",
+            "",
+        ]
+    )
     with trace_path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             event = json.loads(raw_line)
@@ -701,6 +724,7 @@ def write_eval_summary(output_dir: Path, summary: dict[str, Any], rows: list[dic
         "input_tokens",
         "generated_token_count",
         "trace_path",
+        "trace_markdown_path",
     ]
     with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -739,6 +763,9 @@ def run_gsm8k_eval(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir
                 use_chat_template=not args.no_chat_template,
             )
             trace_path = trace_dir / f"example_{index:04d}.jsonl" if index <= args.trace_limit else None
+            trace_markdown_path = (
+                trace_dir / f"example_{index:04d}.md" if index <= args.trace_limit else None
+            )
             output_ids, block_summaries, latency = dynamic_generate(
                 model=model,
                 tokenizer=tokenizer,
@@ -759,6 +786,47 @@ def run_gsm8k_eval(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir
             total_latency += latency
             total_generated_tokens += int(output_ids.shape[1])
 
+            if trace_path is not None and trace_markdown_path is not None:
+                trace_summary = {
+                    "model_path": args.model_path,
+                    "config": args.config,
+                    "prompt": prompt,
+                    "masked_prompt": masked_prompt,
+                    "use_chat_template": not args.no_chat_template,
+                    "model_input_text": tokenizer.decode(input_ids[0], skip_special_tokens=False),
+                    "input_tokens": int(input_ids.shape[1]),
+                    "generated_token_count": int(output_ids.shape[1]),
+                    "generated_text": generated_text,
+                    "generated_text_with_special_tokens": generated_text_with_special,
+                    "latency_seconds": latency,
+                    "gen_length": args.gen_length,
+                    "block_length": args.block_length,
+                    "steps": args.steps,
+                    "early_ratio": args.early_ratio,
+                    "late_ratio": args.late_ratio,
+                    "schedule": schedule_summary(args),
+                    "max_post_steps": args.max_post_steps,
+                    "temperature": args.temperature,
+                    "top_p": args.top_p,
+                    "top_k": args.top_k,
+                    "num_to_transfer": args.num_to_transfer,
+                    "minimal_topk": args.minimal_topk,
+                    "mask_count": args.mask_count,
+                    "mask_position": args.mask_position,
+                    "block_summaries": block_summaries,
+                    "trace_path": str(trace_path),
+                    "markdown_path": str(trace_markdown_path),
+                    "question": example.question,
+                    "gold_answer": example.gold,
+                    "predicted_answer": predicted_answer,
+                    "correct": is_correct,
+                }
+                write_markdown(
+                    trace_path=trace_path,
+                    markdown_path=trace_markdown_path,
+                    summary=trace_summary,
+                )
+
             record = {
                 "id": example.example_id,
                 "index": index,
@@ -776,6 +844,9 @@ def run_gsm8k_eval(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir
                 "generated_text_with_special_tokens": generated_text_with_special,
                 "block_summaries": block_summaries,
                 "trace_path": str(trace_path) if trace_path is not None else None,
+                "trace_markdown_path": (
+                    str(trace_markdown_path) if trace_markdown_path is not None else None
+                ),
             }
             details_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             rows.append(
@@ -789,6 +860,9 @@ def run_gsm8k_eval(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir
                     "input_tokens": int(input_ids.shape[1]),
                     "generated_token_count": int(output_ids.shape[1]),
                     "trace_path": str(trace_path) if trace_path is not None else None,
+                    "trace_markdown_path": (
+                        str(trace_markdown_path) if trace_markdown_path is not None else None
+                    ),
                 }
             )
             print(

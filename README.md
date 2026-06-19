@@ -160,7 +160,7 @@ python experiments/dynamic_threshold_generation.py \
   --block-length 32
 ```
 
-脚本会优先读取 `experiments/dynamic_threshold_config.local.json`，否则读取 `experiments/dynamic_threshold_config.json`。命令行显式传入的动态阈值参数会覆盖配置文件。如果只想看单条 prompt，也可以把 `--input-jsonl ... --limit ...` 换成 `--prompt-file /mnt/workspace/data/my_prompt.txt`。GSM8K 模式默认不写逐轮 trace；需要观察前几条轨迹时加 `--trace-limit 3`。
+脚本会优先读取 `experiments/dynamic_threshold_config.local.json`，否则读取 `experiments/dynamic_threshold_config.json`。命令行显式传入的动态阈值参数会覆盖配置文件。如果只想看单条 prompt，也可以把 `--input-jsonl ... --limit ...` 换成 `--prompt-file /mnt/workspace/data/my_prompt.txt`。GSM8K 模式默认不写逐轮 trace；需要观察前几条轨迹时加 `--trace-limit 3`，会在 `traces/` 下同时写 `example_0001.jsonl` 和更适合阅读的 `example_0001.md`。
 
 ### 本地配置文件
 
