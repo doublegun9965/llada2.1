@@ -146,6 +146,18 @@ python experiments/trace_llada_generation.py \
   --editing-threshold 0.9
 ```
 
+动态阈值本地生成：根据当前 block 内已生成 token 比例自动切换阈值。默认前期 `threshold=0.9` 且关闭 edit，中期 `threshold=0.0` 且 `editing_threshold=0.9`，后期 `threshold=0.0` 且关闭 edit：
+
+```bash
+python experiments/dynamic_threshold_generation.py \
+  --prompt-file /mnt/workspace/data/my_prompt.txt \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --gen-length 128 \
+  --block-length 32 \
+  --early-ratio 0.33 \
+  --late-ratio 0.75
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
