@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -16,7 +17,12 @@ EXPERIMENTS_DIR = Path(__file__).resolve().parent
 if str(EXPERIMENTS_DIR) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS_DIR))
 
-from gsm8k_mask_reconstruct import load_model_and_tokenizer, timestamped_run_dir
+from gsm8k_mask_reconstruct import (
+    extract_answer,
+    load_jsonl_examples,
+    load_model_and_tokenizer,
+    timestamped_run_dir,
+)
 from prompt_mask_generation import build_input_ids, read_prompt, with_added_masks
 from trace_llada_generation import decode_tokens, first_eos_offset, token_text
 
@@ -50,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--prompt", help="Prompt text to send to the model.")
     prompt_group.add_argument("--prompt-file", help="UTF-8 text file containing the prompt.")
+    prompt_group.add_argument(
+        "--input-jsonl",
+        help="Local GSM8K JSONL with question and answer fields. Enables evaluation mode.",
+    )
+    parser.add_argument("--limit", type=int, default=100, help="Number of GSM8K examples to evaluate.")
     parser.add_argument(
         "--config",
         default=None,
@@ -114,6 +125,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Write decoded generated-text snapshots every N iterations. Use 0 to disable snapshots.",
+    )
+    parser.add_argument(
+        "--trace-limit",
+        type=int,
+        default=0,
+        help="In GSM8K mode, write per-iteration trace files for the first N examples. Default 0 disables per-example traces.",
     )
     parser.add_argument("--dtype", choices=["auto", "bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument(
@@ -192,6 +209,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--late-ratio must be between 0 and 1")
     if args.early_ratio > args.late_ratio:
         raise ValueError("--early-ratio must be <= --late-ratio")
+    if args.limit <= 0:
+        raise ValueError("--limit must be positive")
+    if args.trace_limit < 0:
+        raise ValueError("--trace-limit must be non-negative")
 
 
 def phase_for_ratio(ratio: float, args: argparse.Namespace) -> str:
@@ -266,7 +287,7 @@ def dynamic_generate(
     tokenizer: Any,
     input_ids: Any,
     args: argparse.Namespace,
-    trace_path: Path,
+    trace_path: Path | None,
 ) -> tuple[Any, list[dict[str, Any]], float]:
     import torch
 
@@ -296,7 +317,8 @@ def dynamic_generate(
     block_summaries: list[dict[str, Any]] = []
     global_iteration = 0
 
-    with trace_path.open("w", encoding="utf-8") as trace_handle:
+    trace_handle = trace_path.open("w", encoding="utf-8") if trace_path is not None else None
+    try:
         with torch.no_grad():
             for num_block in range(prefill_blocks, num_blocks):
                 current_window_end = (num_block + 1) * args.block_length
@@ -459,7 +481,8 @@ def dynamic_generate(
                         "edits": edit_events,
                         "snapshot": snapshot,
                     }
-                    trace_handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+                    if trace_handle is not None:
+                        trace_handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
                     if active_block_mask.sum() == 0 and not editing_transfer_index.any():
                         break
@@ -472,6 +495,9 @@ def dynamic_generate(
                         eos_positions = (generated_part == eos_id).nonzero(as_tuple=True)[0]
                         if len(eos_positions) > 0:
                             break
+    finally:
+        if trace_handle is not None:
+            trace_handle.close()
 
     generated_answer = x[:, : prompt_length + args.gen_length]
     first_eos = first_eos_offset(generated_answer[0][prompt_length:], eos_id, args.gen_length)
@@ -586,17 +612,18 @@ def schedule_summary(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def main() -> None:
-    args = parse_args()
-    validate_args(args)
-    run_dir = timestamped_run_dir(Path(args.output_dir))
+def gsm8k_prompt(question: str) -> str:
+    return (
+        "Solve the following grade-school math problem. "
+        "Show concise reasoning, then end with a final line exactly like: #### <number>\n\n"
+        f"Problem:\n{question}"
+    )
+
+
+def run_single_prompt(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir: Path) -> None:
     trace_path = run_dir / "trace.jsonl"
     summary_path = run_dir / "summary.json"
     markdown_path = run_dir / "trace.md"
-
-    model, tokenizer = load_model_and_tokenizer(args)
-    if tokenizer.mask_token is None or tokenizer.mask_token_id is None:
-        raise ValueError("Tokenizer does not define a mask token.")
 
     prompt = read_prompt(args)
     masked_prompt = with_added_masks(
@@ -657,6 +684,167 @@ def main() -> None:
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"Results written to {run_dir}")
+
+
+def write_eval_summary(output_dir: Path, summary: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    (output_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    fieldnames = [
+        "index",
+        "id",
+        "correct",
+        "gold_answer",
+        "predicted_answer",
+        "latency_seconds",
+        "input_tokens",
+        "generated_token_count",
+        "trace_path",
+    ]
+    with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_gsm8k_eval(args: argparse.Namespace, model: Any, tokenizer: Any, run_dir: Path) -> None:
+    examples = load_jsonl_examples(Path(args.input_jsonl), args.limit)
+    if not examples:
+        raise RuntimeError("No GSM8K examples loaded.")
+
+    details_path = run_dir / "details.jsonl"
+    trace_dir = run_dir / "traces"
+    if args.trace_limit:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+
+    correct_count = 0
+    total_latency = 0.0
+    total_generated_tokens = 0
+    rows: list[dict[str, Any]] = []
+
+    with details_path.open("w", encoding="utf-8") as details_handle:
+        for index, example in enumerate(examples, start=1):
+            prompt = gsm8k_prompt(example.question)
+            masked_prompt = with_added_masks(
+                prompt=prompt,
+                mask_token=tokenizer.mask_token,
+                mask_count=args.mask_count,
+                mask_position=args.mask_position,
+                separator=args.mask_separator,
+            )
+            input_ids = build_input_ids(
+                tokenizer=tokenizer,
+                prompt=masked_prompt,
+                use_chat_template=not args.no_chat_template,
+            )
+            trace_path = trace_dir / f"example_{index:04d}.jsonl" if index <= args.trace_limit else None
+            output_ids, block_summaries, latency = dynamic_generate(
+                model=model,
+                tokenizer=tokenizer,
+                input_ids=input_ids,
+                args=args,
+                trace_path=trace_path,
+            )
+
+            generated_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            generated_text_with_special = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+            predicted_answer = extract_answer(generated_text)
+            is_correct = (
+                predicted_answer is not None
+                and example.gold is not None
+                and predicted_answer == example.gold
+            )
+            correct_count += int(is_correct)
+            total_latency += latency
+            total_generated_tokens += int(output_ids.shape[1])
+
+            record = {
+                "id": example.example_id,
+                "index": index,
+                "question": example.question,
+                "gold_answer": example.gold,
+                "gold_solution": example.answer,
+                "prompt": prompt,
+                "masked_prompt": masked_prompt,
+                "predicted_answer": predicted_answer,
+                "correct": is_correct,
+                "latency_seconds": latency,
+                "input_tokens": int(input_ids.shape[1]),
+                "generated_token_count": int(output_ids.shape[1]),
+                "generated_text": generated_text,
+                "generated_text_with_special_tokens": generated_text_with_special,
+                "block_summaries": block_summaries,
+                "trace_path": str(trace_path) if trace_path is not None else None,
+            }
+            details_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            rows.append(
+                {
+                    "index": index,
+                    "id": example.example_id,
+                    "correct": is_correct,
+                    "gold_answer": example.gold,
+                    "predicted_answer": predicted_answer,
+                    "latency_seconds": latency,
+                    "input_tokens": int(input_ids.shape[1]),
+                    "generated_token_count": int(output_ids.shape[1]),
+                    "trace_path": str(trace_path) if trace_path is not None else None,
+                }
+            )
+            print(
+                f"[{index}/{len(examples)}] correct={correct_count}/{index} "
+                f"pred={predicted_answer} gold={example.gold} latency={latency:.2f}s",
+                flush=True,
+            )
+
+    total = len(examples)
+    summary = {
+        "mode": "gsm8k_eval",
+        "input_jsonl": args.input_jsonl,
+        "model_path": args.model_path,
+        "config": args.config,
+        "num_examples": total,
+        "correct": correct_count,
+        "accuracy": correct_count / total if total else 0.0,
+        "total_latency_seconds": total_latency,
+        "avg_latency_seconds": total_latency / total if total else 0.0,
+        "total_generated_tokens": total_generated_tokens,
+        "generated_tokens_per_second": total_generated_tokens / total_latency if total_latency > 0 else None,
+        "gen_length": args.gen_length,
+        "block_length": args.block_length,
+        "steps": args.steps,
+        "early_ratio": args.early_ratio,
+        "late_ratio": args.late_ratio,
+        "schedule": schedule_summary(args),
+        "max_post_steps": args.max_post_steps,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "num_to_transfer": args.num_to_transfer,
+        "minimal_topk": args.minimal_topk,
+        "mask_count": args.mask_count,
+        "mask_position": args.mask_position,
+        "details_path": str(details_path),
+        "trace_dir": str(trace_dir) if args.trace_limit else None,
+    }
+    write_eval_summary(run_dir, summary, rows)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print(f"Results written to {run_dir}")
+
+
+def main() -> None:
+    args = parse_args()
+    validate_args(args)
+    run_dir = timestamped_run_dir(Path(args.output_dir))
+
+    model, tokenizer = load_model_and_tokenizer(args)
+    if tokenizer.mask_token is None or tokenizer.mask_token_id is None:
+        raise ValueError("Tokenizer does not define a mask token.")
+
+    if args.input_jsonl:
+        run_gsm8k_eval(args, model, tokenizer, run_dir)
+    else:
+        run_single_prompt(args, model, tokenizer, run_dir)
 
 
 if __name__ == "__main__":
