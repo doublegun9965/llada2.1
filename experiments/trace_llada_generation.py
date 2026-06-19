@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -69,6 +70,15 @@ def parse_args() -> argparse.Namespace:
 
 def token_text(tokenizer: Any, token_id: int) -> str:
     return tokenizer.decode([int(token_id)], skip_special_tokens=False)
+
+
+def markdown_token(value: Any) -> str:
+    rendered = json.dumps(str(value), ensure_ascii=False)
+    if "`" not in rendered:
+        return f"`{rendered}`"
+    max_ticks = max(len(match.group(0)) for match in re.finditer(r"`+", rendered))
+    fence = "`" * (max_ticks + 1)
+    return f"{fence} {rendered} {fence}"
 
 
 def decode_tokens(tokenizer: Any, token_ids: Any) -> str:
@@ -382,7 +392,8 @@ def write_markdown_trace(
                         f"abs={item['absolute_pos']} "
                         f"in_prompt={item['in_prompt']} "
                         f"prob={item['prob']:.6f} "
-                        f"`{item['old_token']}` -> `{item['new_token']}`"
+                        f"{markdown_token(item['old_token'])} -> "
+                        f"{markdown_token(item['new_token'])}"
                     )
                 lines.append("")
             if edits:
@@ -393,7 +404,8 @@ def write_markdown_trace(
                         f"pos={item['generated_pos']} "
                         f"abs={item['absolute_pos']} "
                         f"prob={item['prob']:.6f} "
-                        f"`{item['old_token']}` -> `{item['new_token']}`"
+                        f"{markdown_token(item['old_token'])} -> "
+                        f"{markdown_token(item['new_token'])}"
                     )
                 lines.append("")
             if not mask_fills and not edits:

@@ -24,7 +24,7 @@ from gsm8k_mask_reconstruct import (
     timestamped_run_dir,
 )
 from prompt_mask_generation import build_input_ids, read_prompt, with_added_masks
-from trace_llada_generation import decode_tokens, first_eos_offset, token_text
+from trace_llada_generation import decode_tokens, first_eos_offset, markdown_token, token_text
 
 
 @dataclass(frozen=True)
@@ -596,7 +596,8 @@ def write_markdown(
                         f"abs={item['absolute_pos']} "
                         f"in_prompt={item['in_prompt']} "
                         f"prob={item['prob']:.6f} "
-                        f"`{item['old_token']}` -> `{item['new_token']}`"
+                        f"{markdown_token(item['old_token'])} -> "
+                        f"{markdown_token(item['new_token'])}"
                     )
                 lines.append("")
             if event["edits"]:
@@ -607,7 +608,8 @@ def write_markdown(
                         f"pos={item['generated_pos']} "
                         f"abs={item['absolute_pos']} "
                         f"prob={item['prob']:.6f} "
-                        f"`{item['old_token']}` -> `{item['new_token']}`"
+                        f"{markdown_token(item['old_token'])} -> "
+                        f"{markdown_token(item['new_token'])}"
                     )
                 lines.append("")
             if not event["mask_fills"] and not event["edits"]:
