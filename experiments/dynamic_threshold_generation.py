@@ -32,6 +32,8 @@ class PhaseConfig:
     name: str
     threshold: float
     editing_threshold: float | None
+    max_mask_fills_per_step: int | None
+    max_edits_per_step: int | None
 
 
 SCHEDULE_CONFIG_KEYS = {
@@ -43,6 +45,12 @@ SCHEDULE_CONFIG_KEYS = {
     "early_editing_threshold",
     "mid_editing_threshold",
     "late_editing_threshold",
+    "early_max_mask_fills_per_step",
+    "mid_max_mask_fills_per_step",
+    "late_max_mask_fills_per_step",
+    "early_max_edits_per_step",
+    "mid_max_edits_per_step",
+    "late_max_edits_per_step",
 }
 
 
@@ -121,6 +129,36 @@ def parse_args() -> argparse.Namespace:
         help="Float threshold or off/none/disable. Default: off.",
     )
     parser.add_argument(
+        "--early-max-mask-fills-per-step",
+        default="1",
+        help="Positive integer cap, or off/none/null for uncapped. Default: 1.",
+    )
+    parser.add_argument(
+        "--mid-max-mask-fills-per-step",
+        default="4",
+        help="Positive integer cap, or off/none/null for uncapped. Default: 4.",
+    )
+    parser.add_argument(
+        "--late-max-mask-fills-per-step",
+        default="4",
+        help="Positive integer cap, or off/none/null for uncapped. Default: 4.",
+    )
+    parser.add_argument(
+        "--early-max-edits-per-step",
+        default="off",
+        help="Positive integer cap, or off/none/null for uncapped. Default: off.",
+    )
+    parser.add_argument(
+        "--mid-max-edits-per-step",
+        default="1",
+        help="Positive integer cap, or off/none/null for uncapped. Default: 1.",
+    )
+    parser.add_argument(
+        "--late-max-edits-per-step",
+        default="off",
+        help="Positive integer cap, or off/none/null for uncapped. Default: off.",
+    )
+    parser.add_argument(
         "--snapshot-every",
         type=int,
         default=1,
@@ -194,6 +232,21 @@ def parse_optional_float(raw: Any) -> float | None:
     return float(raw)
 
 
+def parse_optional_positive_int(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in {"off", "none", "disable", "disabled", "null"}:
+            return None
+        parsed = int(value)
+    else:
+        parsed = int(raw)
+    if parsed <= 0:
+        raise ValueError("optional integer caps must be positive or off/none/null")
+    return parsed
+
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.block_length <= 0:
         raise ValueError("--block-length must be positive")
@@ -213,6 +266,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--limit must be positive")
     if args.trace_limit < 0:
         raise ValueError("--trace-limit must be non-negative")
+    for key in (
+        "early_max_mask_fills_per_step",
+        "mid_max_mask_fills_per_step",
+        "late_max_mask_fills_per_step",
+        "early_max_edits_per_step",
+        "mid_max_edits_per_step",
+        "late_max_edits_per_step",
+    ):
+        parse_optional_positive_int(getattr(args, key))
 
 
 def phase_for_ratio(ratio: float, args: argparse.Namespace) -> str:
@@ -229,18 +291,30 @@ def phase_config(phase: str, args: argparse.Namespace) -> PhaseConfig:
             name="early",
             threshold=args.early_threshold,
             editing_threshold=parse_optional_float(args.early_editing_threshold),
+            max_mask_fills_per_step=parse_optional_positive_int(
+                args.early_max_mask_fills_per_step
+            ),
+            max_edits_per_step=parse_optional_positive_int(args.early_max_edits_per_step),
         )
     if phase == "mid":
         return PhaseConfig(
             name="mid",
             threshold=args.mid_threshold,
             editing_threshold=parse_optional_float(args.mid_editing_threshold),
+            max_mask_fills_per_step=parse_optional_positive_int(
+                args.mid_max_mask_fills_per_step
+            ),
+            max_edits_per_step=parse_optional_positive_int(args.mid_max_edits_per_step),
         )
     if phase == "late":
         return PhaseConfig(
             name="late",
             threshold=args.late_threshold,
             editing_threshold=parse_optional_float(args.late_editing_threshold),
+            max_mask_fills_per_step=parse_optional_positive_int(
+                args.late_max_mask_fills_per_step
+            ),
+            max_edits_per_step=parse_optional_positive_int(args.late_max_edits_per_step),
         )
     raise ValueError(f"Unsupported phase: {phase}")
 
@@ -279,6 +353,21 @@ def event_records(
             }
         )
     return records
+
+
+def cap_transfer_mask(transfer_mask: Any, confidence: Any, max_count: int | None) -> Any:
+    if max_count is None:
+        return transfer_mask
+    positions = transfer_mask[0].nonzero(as_tuple=True)[0]
+    if len(positions) <= max_count:
+        return transfer_mask
+    capped = transfer_mask.clone()
+    capped[:] = False
+    masked_confidence = confidence[0].clone()
+    masked_confidence[~transfer_mask[0]] = -float("inf")
+    _, selected = masked_confidence.topk(k=max_count)
+    capped[0, selected] = True
+    return capped
 
 
 def dynamic_generate(
@@ -405,6 +494,11 @@ def dynamic_generate(
                                 )
                                 mask_transfer_index[0, idx] = True
                                 mask_selected_by = f"{phase}_topk_fallback"
+                        mask_transfer_index = cap_transfer_mask(
+                            mask_transfer_index,
+                            mask_confidence,
+                            config.max_mask_fills_per_step,
+                        )
 
                     editing_transfer_index = torch.zeros_like(sampled_tokens, dtype=torch.bool)
                     if config.editing_threshold is not None:
@@ -418,6 +512,11 @@ def dynamic_generate(
                         ) & editable_positions[0]
                         token_changed = sampled_tokens[0] != old_block_tokens[0]
                         editing_transfer_index[0] = high_conf_editing & token_changed
+                        editing_transfer_index = cap_transfer_mask(
+                            editing_transfer_index,
+                            editing_confidence,
+                            config.max_edits_per_step,
+                        )
 
                     mask_events = event_records(
                         tokenizer=tokenizer,
@@ -471,6 +570,8 @@ def dynamic_generate(
                         "active_non_prompt_mask_count": active_non_prompt_mask_count,
                         "threshold": config.threshold,
                         "editing_threshold": config.editing_threshold,
+                        "max_mask_fills_per_step": config.max_mask_fills_per_step,
+                        "max_edits_per_step": config.max_edits_per_step,
                         "block_start_pos": block_start_pos,
                         "block_end_pos": current_window_end,
                         "post_steps": post_steps,
@@ -582,6 +683,8 @@ def write_markdown(
                     f"- Active non-prompt masks: `{event['active_non_prompt_mask_count']}`",
                     f"- Threshold: `{event['threshold']}`",
                     f"- Editing threshold: `{event['editing_threshold']}`",
+                    f"- Max mask fills per step: `{event.get('max_mask_fills_per_step')}`",
+                    f"- Max edits per step: `{event.get('max_edits_per_step')}`",
                     f"- Active masks: `{event['active_mask_count_before']}` -> `{event['active_mask_count_after']}`",
                     f"- Mask selection: `{event['mask_selected_by']}`",
                     "",
@@ -625,14 +728,26 @@ def schedule_summary(args: argparse.Namespace) -> dict[str, Any]:
         "early": {
             "threshold": args.early_threshold,
             "editing_threshold": parse_optional_float(args.early_editing_threshold),
+            "max_mask_fills_per_step": parse_optional_positive_int(
+                args.early_max_mask_fills_per_step
+            ),
+            "max_edits_per_step": parse_optional_positive_int(args.early_max_edits_per_step),
         },
         "mid": {
             "threshold": args.mid_threshold,
             "editing_threshold": parse_optional_float(args.mid_editing_threshold),
+            "max_mask_fills_per_step": parse_optional_positive_int(
+                args.mid_max_mask_fills_per_step
+            ),
+            "max_edits_per_step": parse_optional_positive_int(args.mid_max_edits_per_step),
         },
         "late": {
             "threshold": args.late_threshold,
             "editing_threshold": parse_optional_float(args.late_editing_threshold),
+            "max_mask_fills_per_step": parse_optional_positive_int(
+                args.late_max_mask_fills_per_step
+            ),
+            "max_edits_per_step": parse_optional_positive_int(args.late_max_edits_per_step),
         },
     }
 

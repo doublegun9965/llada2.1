@@ -6,5 +6,11 @@
   "late_threshold": 0.0,
   "early_editing_threshold": "off",
   "mid_editing_threshold": 0.9,
-  "late_editing_threshold": "off"
+  "late_editing_threshold": "off",
+  "early_max_mask_fills_per_step": 1,
+  "mid_max_mask_fills_per_step": 4,
+  "late_max_mask_fills_per_step": 4,
+  "early_max_edits_per_step": "off",
+  "mid_max_edits_per_step": 1,
+  "late_max_edits_per_step": "off"
 }

@@ -146,7 +146,7 @@ python experiments/trace_llada_generation.py \
   --editing-threshold 0.9
 ```
 
-动态阈值本地 GSM8K 评测：根据当前 block 内已生成 token 比例自动切换阈值。默认前期 `threshold=0.9` 且关闭 edit，中期 `threshold=0.0` 且 `editing_threshold=0.9`，后期 `threshold=0.0` 且关闭 edit：
+动态阈值本地 GSM8K 评测：根据当前 block 内已生成 token 比例自动切换阈值。默认前期 `threshold=0.9` 且关闭 edit，中期 `threshold=0.0` 且 `editing_threshold=0.9`，后期 `threshold=0.0` 且关闭 edit。为了避免低阈值时一轮填满整个 block，默认还会限制每轮写入数量：early 最多填 1 个 mask，mid/late 最多填 4 个 mask，mid 最多 edit 1 个 token：
 
 ```bash
 cp experiments/dynamic_threshold_config.local.example.json experiments/dynamic_threshold_config.local.json
@@ -161,6 +161,19 @@ python experiments/dynamic_threshold_generation.py \
 ```
 
 脚本会优先读取 `experiments/dynamic_threshold_config.local.json`，否则读取 `experiments/dynamic_threshold_config.json`。命令行显式传入的动态阈值参数会覆盖配置文件。如果只想看单条 prompt，也可以把 `--input-jsonl ... --limit ...` 换成 `--prompt-file /mnt/workspace/data/my_prompt.txt`。GSM8K 模式默认不写逐轮 trace；需要观察前几条轨迹时加 `--trace-limit 3`，会在 `traces/` 下同时写 `example_0001.jsonl` 和更适合阅读的 `example_0001.md`。
+
+动态阈值配置里可以额外控制每轮最多提交多少改动，避免 `threshold=0.0` 时把大量低置信度 token 一次性写死：
+
+```json
+{
+  "early_max_mask_fills_per_step": 1,
+  "mid_max_mask_fills_per_step": 4,
+  "late_max_mask_fills_per_step": 4,
+  "mid_max_edits_per_step": 1
+}
+```
+
+`*_max_*_per_step` 填正整数表示上限，填 `"off"` 表示不限制。一般不要把 `mid_editing_threshold` 设成 `0.0`，它会允许很低置信度的非 mask token 被改写。
 
 ### 本地配置文件
 
