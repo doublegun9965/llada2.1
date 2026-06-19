@@ -134,6 +134,18 @@ python scripts/compare_gsm8k_details.py \
   --label-from variant
 ```
 
+记录本地 LLaDA2.1 `generate()` 的逐轮轨迹，观察每轮填了哪些 mask、edit 了哪些 token：
+
+```bash
+python experiments/trace_llada_generation.py \
+  --prompt-file /mnt/workspace/data/my_prompt.txt \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --gen-length 128 \
+  --block-length 32 \
+  --threshold 0.5 \
+  --editing-threshold 0.9
+```
+
 ### 本地配置文件
 
 服务器相关的配置尽量写在 `.local` 文件里。这些文件会被 Git 忽略，不会影响之后 `git pull`。
