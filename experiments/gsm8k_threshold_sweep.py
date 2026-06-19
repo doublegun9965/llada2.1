@@ -7,6 +7,7 @@ import json
 import os
 import random
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -225,6 +226,21 @@ def managed_base_url(server_config: dict[str, Any]) -> str:
     return f"http://127.0.0.1:{port}/v1"
 
 
+def assert_managed_port_available(server_config: dict[str, Any]) -> None:
+    port = int(server_config.get("port", 30000))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        result = sock.connect_ex(("127.0.0.1", port))
+
+    if result == 0:
+        raise RuntimeError(
+            f"Port {port} is already accepting connections before this script starts SGLang. "
+            "Stop the existing SGLang process first, or use --use-running-server for one "
+            "already-started threshold pair. Otherwise requests may hit the old server and "
+            "the newly written threshold YAML will not take effect."
+        )
+
+
 def start_sglang_server(
     *,
     server_config: dict[str, Any],
@@ -272,6 +288,11 @@ def wait_for_server(base_url: str, process: subprocess.Popen, timeout_seconds: f
         try:
             response = httpx.get(models_url, timeout=5)
             if response.status_code < 500:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"SGLang exited with code {process.returncode} while another "
+                        f"process answered {models_url}. Stop the old server and rerun."
+                    )
                 print(f"SGLang is ready: {models_url}")
                 return
             last_error = f"HTTP {response.status_code}: {response.text[:200]}"
@@ -744,6 +765,8 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "chars_per_second",
         "wall_chars_per_second",
         "details_path",
+        "dllm_config_path",
+        "server_log_path",
     ]
     with summary_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -795,6 +818,7 @@ def main() -> None:
                 threshold=threshold,
                 edit_threshold=edit_threshold,
             )
+            assert_managed_port_available(server_config)
             print(f"Starting SGLang for threshold={threshold} edit_threshold={edit_threshold}")
             print(f"DLLM config: {dllm_config_path}")
             print(f"Server log: {server_log_path}")
@@ -855,6 +879,8 @@ def main() -> None:
                 print("Stopping SGLang")
                 stop_sglang_server(process, args.shutdown_timeout_seconds)
 
+        summary["dllm_config_path"] = str(dllm_config_path) if not args.use_running_server else None
+        summary["server_log_path"] = str(server_log_path) if not args.use_running_server else None
         summaries.append(summary)
         write_summary(output_dir, summaries)
         progress_write(
