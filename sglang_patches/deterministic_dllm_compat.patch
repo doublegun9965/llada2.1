@@ -1,0 +1,21 @@
+diff --git a/python/sglang/srt/dllm/mixin/scheduler.py b/python/sglang/srt/dllm/mixin/scheduler.py
+index 157ab21..74093d0 100644
+--- a/python/sglang/srt/dllm/mixin/scheduler.py
++++ b/python/sglang/srt/dllm/mixin/scheduler.py
+@@ -254,10 +254,15 @@ class SchedulerDllmMixin:
+ 
+             # Prepare and add request
+             req.init_next_round_input(self.tree_cache)
++            # LLADA21_DLLM_DETERMINISTIC_COMPAT_PROBE:
++            # Deterministic inference sets truncation_align_size for normal
++            # prefill, but dLLM prefill explicitly does not support that path.
++            # Keep deterministic kernels enabled while bypassing the
++            # truncation alignment assertion for dLLM incoming requests.
+             res = adder.add_one_req(
+                 req,
+                 has_chunked_req=True,
+-                truncation_align_size=self.truncation_align_size,
++                truncation_align_size=None,
+             )
+ 
+             if res != AddReqResult.CONTINUE:

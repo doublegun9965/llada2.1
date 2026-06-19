@@ -61,6 +61,9 @@ def build_command(config: dict[str, Any]) -> list[str]:
     add_optional_arg(command, "--dllm-algorithm", config.get("dllm_algorithm"))
     add_optional_arg(command, "--dllm-algorithm-config", config.get("dllm_algorithm_config"))
 
+    if config.get("enable_deterministic_inference", False):
+        command.append("--enable-deterministic-inference")
+
     if config.get("trust_remote_code", True):
         command.append("--trust-remote-code")
 

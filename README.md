@@ -50,6 +50,20 @@ git pull --ff-only
 scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1
 ```
 
+当前已有一个确定性兼容补丁：
+
+```text
+sglang_patches/deterministic_dllm_compat.patch
+```
+
+这个补丁用于 SGLang `0.5.12.post1` + LLaDA 2.1 dLLM：开启 `--enable-deterministic-inference` 时，绕过 dLLM prefill 不支持的 `truncation_align_size` 路径。应用补丁后，在 `sglang_server/server_config.local.json` 里设置：
+
+```json
+"enable_deterministic_inference": true
+```
+
+启动日志里应能看到 deterministic inference 已开启，以及 sampling backend 被切到 pytorch。
+
 GSM8K 数据可以放在任意路径，只要运行时用 `--input-jsonl` 指定即可。推荐路径：
 
 ```bash
@@ -239,9 +253,12 @@ vim sglang_server/server_config.local.json
   "tensor_parallel_size": 1,
   "mem_fraction_static": null,
   "dllm_algorithm": "JointThreshold",
-  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml"
+  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml",
+  "enable_deterministic_inference": false
 }
 ```
+
+如果已经在服务器上应用 `sglang_patches/deterministic_dllm_compat.patch`，可以把 `enable_deterministic_inference` 改成 `true`。这会让 `sglang_server/launch_sglang.py` 启动 SGLang 时追加 `--enable-deterministic-inference`。
 
 创建服务器环境变量文件：
 
@@ -724,9 +741,12 @@ Important fields:
   "tensor_parallel_size": 1,
   "mem_fraction_static": null,
   "dllm_algorithm": "JointThreshold",
-  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml"
+  "dllm_algorithm_config": "sglang_server/dllm_algorithm_config.local.yaml",
+  "enable_deterministic_inference": false
 }
 ```
+
+After applying `sglang_patches/deterministic_dllm_compat.patch` on the server, set `enable_deterministic_inference` to `true` to make `sglang_server/launch_sglang.py` pass `--enable-deterministic-inference`.
 
 ### SGLang Environment Variables
 

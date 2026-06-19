@@ -47,6 +47,8 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
   - server workspace: `/mnt/workspace/third_party/sglang-v0.5.12.post1`
 - If modifying SGLang for experiments, commit patch files under `sglang_patches/`, not the SGLang source tree.
 - Use `scripts/save_sglang_patch.sh <sglang-src-dir> <name.patch>` to export source changes and `scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1` to apply committed patches on the server.
+- `sglang_patches/deterministic_dllm_compat.patch` is the current SGLang `0.5.12.post1` + LLaDA 2.1 dLLM deterministic compatibility patch.
+- After applying that patch, `sglang_server/server_config.local.json` can set `"enable_deterministic_inference": true`; `launch_sglang.py` will pass `--enable-deterministic-inference`.
 
 ## Experiment Outputs
 
