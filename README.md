@@ -72,8 +72,11 @@ python experiments/gsm8k_threshold_sweep.py \
   --limit 100 \
   --thresholds 0.4,0.5,0.6 \
   --edit-thresholds 0.0,0.2,0.4 \
-  --max-tokens 512
+  --max-tokens 512 \
+  --batch-size 4
 ```
+
+`--batch-size 4` 表示同一个阈值组合下同时发送 4 个 SGLang 请求；不同阈值组合仍会按顺序重启 SGLang，因为 LLaDA2.1 阈值是 server-startup 配置。
 
 SGLang 续写模式，给正确答案前缀：
 

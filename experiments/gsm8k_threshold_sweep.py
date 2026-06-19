@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -129,6 +130,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gold-noise-token", default="[MASK]")
     parser.add_argument("--gold-noise-seed", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/gsm8k")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Number of concurrent SGLang requests for each threshold pair. Default 1.",
+    )
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
     return parser.parse_args()
@@ -486,6 +493,86 @@ def progress_write(message: str, *, enabled: bool) -> None:
         print(message, flush=True)
 
 
+def evaluate_one_example(
+    *,
+    client: SGLangClient,
+    model: str,
+    example: Example,
+    index: int,
+    total_examples: int,
+    extra_body: dict[str, Any],
+    threshold: float,
+    edit_threshold: float,
+    temperature: float,
+    max_tokens: int,
+    gold_prefix_tokens: int,
+    gold_prefix_style: str,
+    gold_noise_ratio: float | None,
+    gold_noise_token: str,
+    gold_noise_seed: int,
+    sleep_seconds: float,
+) -> dict[str, Any]:
+    answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
+    noised_answer = None
+    noise_indices: list[int] = []
+    final_answer_noise_indices: list[int] = []
+    if gold_noise_ratio is not None:
+        noised_answer, noise_indices, final_answer_noise_indices = noised_gold_answer(
+            example.answer,
+            ratio=gold_noise_ratio,
+            noise_token=gold_noise_token,
+            seed=gold_noise_seed,
+            example_id=example.example_id,
+        )
+    prompt = build_prompt(
+        example.question,
+        answer_prefix=answer_prefix,
+        gold_prefix_style=gold_prefix_style,
+        noisy_gold_answer=noised_answer,
+    )
+    started = time.perf_counter()
+    result = client.chat_completion(
+        model=model,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        extra_body=extra_body,
+    )
+    latency = time.perf_counter() - started
+    if sleep_seconds > 0:
+        time.sleep(sleep_seconds)
+
+    prediction = extract_answer(result.text)
+    is_correct = prediction is not None and example.gold is not None and prediction == example.gold
+    tokens = completion_tokens(result.raw)
+    return {
+        "id": example.example_id,
+        "index": index,
+        "total_examples": total_examples,
+        "threshold": threshold,
+        "edit_threshold": edit_threshold,
+        "question": example.question,
+        "gold_answer": example.gold,
+        "gold_solution": example.answer,
+        "gold_prefix_tokens": gold_prefix_tokens,
+        "gold_prefix_style": gold_prefix_style,
+        "gold_prefix": answer_prefix,
+        "gold_noise_ratio": gold_noise_ratio,
+        "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
+        "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
+        "gold_noise_indices": noise_indices,
+        "gold_final_answer_noise_indices": final_answer_noise_indices,
+        "gold_noised_solution": noised_answer,
+        "prompt": prompt,
+        "predicted_answer": prediction,
+        "correct": is_correct,
+        "latency_seconds": latency,
+        "completion_tokens": tokens,
+        "completion_chars": len(result.text),
+        "completion": result.text,
+    }
+
+
 def evaluate_threshold_pair(
     *,
     client: SGLangClient,
@@ -502,6 +589,7 @@ def evaluate_threshold_pair(
     gold_noise_ratio: float | None,
     gold_noise_token: str,
     gold_noise_seed: int,
+    batch_size: int,
     sleep_seconds: float,
     show_progress: bool,
 ) -> dict[str, Any]:
@@ -512,105 +600,82 @@ def evaluate_threshold_pair(
     total_completion_tokens = 0
     token_count_available = 0
     total_completion_chars = 0
+    results: list[dict[str, Any]] = []
+    wall_started = time.perf_counter()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        progress_bar = None
-        iterable = examples
-        if show_progress and tqdm is not None:
-            description = f"threshold={threshold} edit={edit_threshold}"
-            progress_bar = tqdm(examples, desc=description, unit="ex")
-            iterable = progress_bar
+    progress_bar = None
+    if show_progress and tqdm is not None:
+        description = f"threshold={threshold} edit={edit_threshold} batch={batch_size}"
+        progress_bar = tqdm(total=len(examples), desc=description, unit="ex")
 
-        for index, example in enumerate(iterable, start=1):
-            answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
-            noised_answer = None
-            noise_indices: list[int] = []
-            final_answer_noise_indices: list[int] = []
-            if gold_noise_ratio is not None:
-                noised_answer, noise_indices, final_answer_noise_indices = noised_gold_answer(
-                    example.answer,
-                    ratio=gold_noise_ratio,
-                    noise_token=gold_noise_token,
-                    seed=gold_noise_seed,
-                    example_id=example.example_id,
+    try:
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = [
+                executor.submit(
+                    evaluate_one_example,
+                    client=client,
+                    model=model,
+                    example=example,
+                    index=index,
+                    total_examples=len(examples),
+                    extra_body=extra_body,
+                    threshold=threshold,
+                    edit_threshold=edit_threshold,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    gold_prefix_tokens=gold_prefix_tokens,
+                    gold_prefix_style=gold_prefix_style,
+                    gold_noise_ratio=gold_noise_ratio,
+                    gold_noise_token=gold_noise_token,
+                    gold_noise_seed=gold_noise_seed,
+                    sleep_seconds=sleep_seconds,
                 )
-            prompt = build_prompt(
-                example.question,
-                answer_prefix=answer_prefix,
-                gold_prefix_style=gold_prefix_style,
-                noisy_gold_answer=noised_answer,
-            )
-            started = time.perf_counter()
-            result = client.chat_completion(
-                model=model,
-                prompt=prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                extra_body=extra_body,
-            )
-            latency = time.perf_counter() - started
+                for index, example in enumerate(examples, start=1)
+            ]
+            for completed, future in enumerate(as_completed(futures), start=1):
+                record = future.result()
+                results.append(record)
+                correct_count += int(record["correct"])
+                total_latency += float(record["latency_seconds"])
+                total_completion_chars += int(record["completion_chars"])
 
-            prediction = extract_answer(result.text)
-            is_correct = prediction is not None and example.gold is not None and prediction == example.gold
-            correct_count += int(is_correct)
-            total_latency += latency
-            total_completion_chars += len(result.text)
+                tokens = record["completion_tokens"]
+                if tokens is not None:
+                    total_completion_tokens += int(tokens)
+                    token_count_available += 1
 
-            tokens = completion_tokens(result.raw)
-            if tokens is not None:
-                total_completion_tokens += tokens
-                token_count_available += 1
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                    progress_bar.set_postfix(
+                        acc=f"{correct_count / completed:.3f}",
+                        latency=f"{record['latency_seconds']:.2f}s",
+                        pred=record["predicted_answer"],
+                        gold=record["gold_answer"],
+                    )
+                elif not show_progress:
+                    print(
+                        f"[threshold={threshold} edit={edit_threshold}] "
+                        f"{completed}/{len(examples)} correct={correct_count}/{completed} "
+                        f"latency={record['latency_seconds']:.2f}s "
+                        f"pred={record['predicted_answer']} gold={record['gold_answer']}",
+                        flush=True,
+                    )
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
 
-            record = {
-                "id": example.example_id,
-                "index": index,
-                "threshold": threshold,
-                "edit_threshold": edit_threshold,
-                "question": example.question,
-                "gold_answer": example.gold,
-                "gold_solution": example.answer,
-                "gold_prefix_tokens": gold_prefix_tokens,
-                "gold_prefix_style": gold_prefix_style,
-                "gold_prefix": answer_prefix,
-                "gold_noise_ratio": gold_noise_ratio,
-                "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
-                "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
-                "gold_noise_indices": noise_indices,
-                "gold_final_answer_noise_indices": final_answer_noise_indices,
-                "gold_noised_solution": noised_answer,
-                "prompt": prompt,
-                "predicted_answer": prediction,
-                "correct": is_correct,
-                "latency_seconds": latency,
-                "completion_tokens": tokens,
-                "completion_chars": len(result.text),
-                "completion": result.text,
-            }
+    with output_path.open("w", encoding="utf-8") as handle:
+        for record in sorted(results, key=lambda item: int(item["index"])):
+            record.pop("total_examples", None)
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-            if progress_bar is not None:
-                progress_bar.set_postfix(
-                    acc=f"{correct_count / index:.3f}",
-                    latency=f"{latency:.2f}s",
-                    pred=prediction,
-                    gold=example.gold,
-                )
-            elif not show_progress:
-                print(
-                    f"[threshold={threshold} edit={edit_threshold}] "
-                    f"{index}/{len(examples)} correct={correct_count}/{index} "
-                    f"latency={latency:.2f}s pred={prediction} gold={example.gold}",
-                    flush=True,
-                )
-
-            if sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
     total = len(examples)
+    wall_time = time.perf_counter() - wall_started
     summary = {
         "threshold": threshold,
         "edit_threshold": edit_threshold,
+        "batch_size": batch_size,
         "gold_prefix_tokens": gold_prefix_tokens,
         "gold_prefix_style": gold_prefix_style if gold_prefix_tokens > 0 else "none",
         "gold_noise_ratio": gold_noise_ratio,
@@ -621,6 +686,8 @@ def evaluate_threshold_pair(
         "accuracy": correct_count / total if total else 0.0,
         "total_latency_seconds": total_latency,
         "avg_latency_seconds": total_latency / total if total else 0.0,
+        "wall_time_seconds": wall_time,
+        "requests_per_second": total / wall_time if wall_time > 0 else None,
         "completion_tokens_available": token_count_available == total,
         "total_completion_tokens": total_completion_tokens if token_count_available else None,
         "tokens_per_second": (
@@ -628,7 +695,13 @@ def evaluate_threshold_pair(
             if token_count_available == total and total_latency > 0
             else None
         ),
+        "wall_tokens_per_second": (
+            total_completion_tokens / wall_time
+            if token_count_available == total and wall_time > 0
+            else None
+        ),
         "chars_per_second": total_completion_chars / total_latency if total_latency > 0 else None,
+        "wall_chars_per_second": total_completion_chars / wall_time if wall_time > 0 else None,
         "details_path": str(output_path),
     }
     return summary
@@ -651,6 +724,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
     fieldnames = [
         "threshold",
         "edit_threshold",
+        "batch_size",
         "gold_prefix_tokens",
         "gold_prefix_style",
         "gold_noise_ratio",
@@ -661,10 +735,14 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "accuracy",
         "total_latency_seconds",
         "avg_latency_seconds",
+        "wall_time_seconds",
+        "requests_per_second",
         "completion_tokens_available",
         "total_completion_tokens",
         "tokens_per_second",
+        "wall_tokens_per_second",
         "chars_per_second",
+        "wall_chars_per_second",
         "details_path",
     ]
     with summary_csv.open("w", encoding="utf-8", newline="") as handle:
@@ -676,6 +754,8 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
 def main() -> None:
     args = parse_args()
     settings = load_settings()
+    if args.batch_size <= 0:
+        raise ValueError("--batch-size must be positive")
 
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
@@ -753,6 +833,7 @@ def main() -> None:
                 gold_noise_ratio=args.gold_noise_ratio,
                 gold_noise_token=args.gold_noise_token,
                 gold_noise_seed=args.gold_noise_seed,
+                batch_size=args.batch_size,
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
             )
@@ -783,7 +864,10 @@ def main() -> None:
             f"gold_noise_ratio={args.gold_noise_ratio} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
+            f"wall_time={summary['wall_time_seconds']:.2f}s "
+            f"requests_per_second={summary['requests_per_second']} "
             f"tokens_per_second={summary['tokens_per_second']} "
+            f"wall_tokens_per_second={summary['wall_tokens_per_second']} "
             f"chars_per_second={summary['chars_per_second']:.2f}",
             enabled=not args.no_progress,
         )

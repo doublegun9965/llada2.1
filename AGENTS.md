@@ -75,6 +75,18 @@ python experiments/gsm8k_local_baseline.py \
   --trace-limit 2
 ```
 
+SGLang GSM8K threshold sweep with four concurrent requests per threshold pair:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.4,0.5,0.6 \
+  --edit-thresholds 0.0,0.2,0.4 \
+  --max-tokens 512 \
+  --batch-size 4
+```
+
 ## Coding Conventions
 
 - Keep scripts runnable directly from a fresh Git checkout without requiring editable install when practical. Add `src/` to `sys.path` in top-level experiment scripts if needed.
