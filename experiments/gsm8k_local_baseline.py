@@ -62,6 +62,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-position", choices=["head", "tail"], default="tail")
     parser.add_argument("--mask-separator", default=" ")
     parser.add_argument("--trace-limit", type=int, default=0)
+    parser.add_argument(
+        "--snapshot-every",
+        type=int,
+        default=None,
+        help=(
+            "Write decoded snapshots every N trace iterations. Default: 1 when "
+            "--trace-limit is enabled, otherwise 0."
+        ),
+    )
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--no-eos-early-stop", action="store_true")
     parser.add_argument(
@@ -108,6 +117,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--mask-count must be non-negative")
     if args.trace_limit < 0:
         raise ValueError("--trace-limit must be non-negative")
+    if args.snapshot_every is not None and args.snapshot_every < 0:
+        raise ValueError("--snapshot-every must be non-negative")
     parse_editing_threshold(args.editing_threshold)
 
 
@@ -146,6 +157,8 @@ def main() -> None:
     )
     generate_args = argparse.Namespace(**vars(args))
     generate_args.editing_threshold = effective_editing_threshold
+    if generate_args.snapshot_every is None:
+        generate_args.snapshot_every = 1 if args.trace_limit else 0
 
     run_dir = timestamped_run_dir(Path(args.output_dir))
     details_path = run_dir / "details.jsonl"
