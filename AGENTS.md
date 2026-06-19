@@ -58,5 +58,6 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 
 - Keep scripts runnable directly from a fresh Git checkout without requiring editable install when practical. Add `src/` to `sys.path` in top-level experiment scripts if needed.
 - Favor explicit CLI arguments and JSON config files over hardcoded constants.
+- When adding a new experiment script, also add a copy-paste-friendly server command to the README experiment command quick reference.
 - Use ASCII in code and docs unless there is a clear reason otherwise.
 - Keep changes narrowly scoped to the experiment or workflow being requested.
