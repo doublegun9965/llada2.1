@@ -64,6 +64,14 @@ sglang_patches/deterministic_dllm_compat.patch
 
 启动日志里应能看到 deterministic inference 已开启，以及 sampling backend 被切到 pytorch。
 
+如果只想应用某一个补丁，可以把补丁名放在命令最后：
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+```
+
+`sglang_patches/dllm_trace.patch` 用来记录 SGLang 内部 `JointThreshold` 的 M2T/T2T 轨迹。默认不写 trace；只有在 DLLM YAML 里设置 `trace_path` 后才启用。
+
 GSM8K 数据可以放在任意路径，只要运行时用 `--input-jsonl` 指定即可。推荐路径：
 
 ```bash
@@ -293,9 +301,56 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
+trace_path: null
+trace_snapshot_every: 1
+trace_max_events: null
 ```
 
 修改 `threshold` 或 `edit_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
+
+### SGLang dLLM Trace
+
+这个模式用于观察 SGLang 内部 `JointThreshold` 每轮 M2T 和 T2T 是怎么发生的。
+
+1. 在服务器应用 trace patch：
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+```
+
+2. 修改 `sglang_server/dllm_algorithm_config.local.yaml`：
+
+```yaml
+threshold: 0.5
+edit_threshold: 0.0
+max_post_edit_steps: 16
+penalty_lambda: 0
+trace_path: outputs/sglang_dllm_trace/trace.jsonl
+trace_snapshot_every: 1
+trace_max_events: 200
+```
+
+3. 启动 SGLang 并发一条请求：
+
+```bash
+bash sglang_server/start_sglang.sh
+python experiments/smoke_test.py --prompt "Janet's ducks lay 16 eggs per day. How much money does she make?"
+```
+
+4. 把 trace 渲染成 Markdown：
+
+```bash
+python scripts/render_sglang_dllm_trace.py \
+  outputs/sglang_dllm_trace/trace.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --trust-remote-code
+```
+
+输出文件默认是：
+
+```text
+outputs/sglang_dllm_trace/trace.md
+```
 
 ### 自动运行 GSM8K 阈值实验
 
@@ -783,9 +838,29 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
+trace_path: null
+trace_snapshot_every: 1
+trace_max_events: null
 ```
 
 Changing `threshold` or `edit_threshold` requires restarting SGLang.
+
+### SGLang dLLM Trace
+
+Apply only the trace patch when you want to inspect server-side M2T/T2T events:
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+```
+
+Then set `trace_path` in `sglang_server/dllm_algorithm_config.local.yaml`, restart SGLang, run a request, and render Markdown:
+
+```bash
+python scripts/render_sglang_dllm_trace.py \
+  outputs/sglang_dllm_trace/trace.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --trust-remote-code
+```
 
 ## Run GSM8K Sweep Automatically
 

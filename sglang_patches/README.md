@@ -27,3 +27,14 @@ scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1
 ```
 
 The script checks every `*.patch` before applying it.
+
+To apply only selected patches:
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+```
+
+Current patches:
+
+- `deterministic_dllm_compat.patch`: compatibility patch for SGLang deterministic inference with LLaDA 2.1 dLLM.
+- `dllm_trace.patch`: writes JointThreshold M2T/T2T trace events when `trace_path` is set in the DLLM YAML config.

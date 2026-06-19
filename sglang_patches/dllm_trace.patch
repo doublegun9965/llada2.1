@@ -1,0 +1,158 @@
+diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+index a572fda..41f00c2 100644
+--- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
++++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+@@ -1,3 +1,7 @@
++import json
++import time
++from pathlib import Path
++
+ import numpy as np
+ import torch
+ import torch.nn.functional as F
+@@ -22,6 +26,55 @@ class JointThreshold(DllmAlgorithm):
+             "max_post_edit_steps", 16
+         )
+         self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
++        self.trace_path = config.algorithm_config.get("trace_path")
++        self.trace_snapshot_every = int(
++            config.algorithm_config.get("trace_snapshot_every", 1)
++        )
++        trace_max_events = config.algorithm_config.get("trace_max_events")
++        self.trace_max_events = (
++            None if trace_max_events is None else int(trace_max_events)
++        )
++        self._trace_events_written = 0
++        self._trace_run_id = f"{int(time.time() * 1000)}"
++
++    def _trace_enabled(self) -> bool:
++        return bool(self.trace_path) and (
++            self.trace_max_events is None
++            or self._trace_events_written < self.trace_max_events
++        )
++
++    def _trace_records(
++        self,
++        *,
++        transfer_index: torch.Tensor,
++        old_tokens: torch.Tensor,
++        new_tokens: torch.Tensor,
++        probs: torch.Tensor,
++        event_type: str,
++    ) -> list[dict]:
++        records = []
++        for block_offset in transfer_index.nonzero(as_tuple=True)[0].tolist():
++            block_offset = int(block_offset)
++            records.append(
++                {
++                    "type": event_type,
++                    "block_offset": block_offset,
++                    "old_token_id": int(old_tokens[block_offset].item()),
++                    "new_token_id": int(new_tokens[block_offset].item()),
++                    "prob": float(probs[block_offset].item()),
++                }
++            )
++        return records
++
++    def _write_trace_event(self, event: dict) -> None:
++        if not self._trace_enabled():
++            return
++
++        trace_path = Path(self.trace_path)
++        trace_path.parent.mkdir(parents=True, exist_ok=True)
++        with trace_path.open("a", encoding="utf-8") as handle:
++            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
++        self._trace_events_written += 1
+ 
+     def run(
+         self,
+@@ -56,7 +109,9 @@ class JointThreshold(DllmAlgorithm):
+         any_changed_in_last_step = False
+ 
+         max_iterations = self.block_size + self.max_post_edit_steps
++        global_iteration = 0
+         for _ in range(max_iterations):
++            global_iteration += 1
+             if finished.all():
+                 break
+ 
+@@ -75,6 +130,7 @@ class JointThreshold(DllmAlgorithm):
+                 curr_input_ids = forward_batch.input_ids[block_start:block_end]
+                 curr_logits = logits_output.full_logits[block_start:block_end]
+                 curr_prompt_mask = prompt_masks[i]
++                old_input_ids = curr_input_ids.clone()
+ 
+                 if self.penalty_lambda > 0:
+                     prev_ids = curr_input_ids[:-1]
+@@ -94,16 +150,20 @@ class JointThreshold(DllmAlgorithm):
+ 
+                 mask_index = curr_input_ids == self.mask_id
+                 has_mask = mask_index.any()
++                active_mask_count_before = int(mask_index.sum().item())
+ 
+                 # Mask to token (M2T)
+                 mask_transfer_index = torch.zeros_like(mask_index)
++                mask_selected_by = "none"
+                 if has_mask:
+                     confidence = torch.where(mask_index, p, -np.inf)
+                     mask_transfer_index = confidence > self.threshold
++                    mask_selected_by = "threshold"
+ 
+                     if not mask_transfer_index.any():
+                         _, select_index = torch.topk(confidence, k=1)
+                         mask_transfer_index[select_index] = True
++                        mask_selected_by = "topk_fallback"
+                 else:
+                     post_edit_steps[i] += 1
+                     if post_edit_steps[i] > self.max_post_edit_steps:
+@@ -121,7 +181,50 @@ class JointThreshold(DllmAlgorithm):
+                     finished[i] = True
+                     continue
+ 
++                mask_events = []
++                edit_events = []
++                should_trace_snapshot = (
++                    self.trace_snapshot_every > 0
++                    and global_iteration % self.trace_snapshot_every == 0
++                )
++                if self._trace_enabled():
++                    mask_events = self._trace_records(
++                        transfer_index=mask_transfer_index,
++                        old_tokens=old_input_ids,
++                        new_tokens=x,
++                        probs=p,
++                        event_type="mask_fill",
++                    )
++                    edit_events = self._trace_records(
++                        transfer_index=edit_transfer_index,
++                        old_tokens=old_input_ids,
++                        new_tokens=x,
++                        probs=p,
++                        event_type="edit",
++                    )
++
+                 curr_input_ids[transfer_index] = x[transfer_index]
++                active_mask_count_after = int((curr_input_ids == self.mask_id).sum().item())
++                if self._trace_enabled():
++                    event = {
++                        "run_id": self._trace_run_id,
++                        "global_iteration": global_iteration,
++                        "batch_index": i,
++                        "batch_size": batch_size,
++                        "block_size": self.block_size,
++                        "threshold": self.threshold,
++                        "edit_threshold": self.edit_threshold,
++                        "max_post_edit_steps": self.max_post_edit_steps,
++                        "post_edit_steps": int(post_edit_steps[i].item()),
++                        "active_mask_count_before": active_mask_count_before,
++                        "active_mask_count_after": active_mask_count_after,
++                        "mask_selected_by": mask_selected_by,
++                        "mask_fills": mask_events,
++                        "edits": edit_events,
++                    }
++                    if should_trace_snapshot:
++                        event["block_token_ids"] = curr_input_ids.detach().cpu().tolist()
++                    self._write_trace_event(event)
+                 any_changed_in_last_step = True
+ 
+         if any_changed_in_last_step:

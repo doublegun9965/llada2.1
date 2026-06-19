@@ -11,11 +11,31 @@ if [[ ! -d "$sglang_src/.git" ]]; then
 fi
 
 shopt -s nullglob
-patches=("$patch_dir"/*.patch)
+if [[ $# -gt 1 ]]; then
+  patches=()
+  shift
+  for patch_name in "$@"; do
+    if [[ "$patch_name" = /* ]]; then
+      patches+=("$patch_name")
+    else
+      patches+=("$patch_dir/$patch_name")
+    fi
+  done
+else
+  patches=("$patch_dir"/*.patch)
+fi
+
 if [[ ${#patches[@]} -eq 0 ]]; then
   echo "No patches found in $patch_dir"
   exit 0
 fi
+
+for patch in "${patches[@]}"; do
+  if [[ ! -f "$patch" ]]; then
+    echo "Patch not found: $patch" >&2
+    exit 1
+  fi
+done
 
 for patch in "${patches[@]}"; do
   echo "Checking $patch"
