@@ -25,6 +25,31 @@ git pull --ff-only
 pip install -e .
 ```
 
+### SGLang 源码补丁
+
+SGLang 源码 checkout 不提交到这个仓库；后续实验如果需要改 SGLang，只提交 `sglang_patches/` 下的 patch 文件。当前约定路径：
+
+```text
+本地: third_party/sglang-v0.5.12.post1
+服务器: /mnt/workspace/third_party/sglang-v0.5.12.post1
+```
+
+从 SGLang 工作树导出 patch：
+
+```bash
+scripts/save_sglang_patch.sh third_party/sglang-v0.5.12.post1 my_experiment.patch
+git add sglang_patches/my_experiment.patch
+git commit -m "Add SGLang patch for my experiment"
+git push
+```
+
+服务器拉取本仓库后应用 patch：
+
+```bash
+git pull --ff-only
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1
+```
+
 GSM8K 数据可以放在任意路径，只要运行时用 `--input-jsonl` 指定即可。推荐路径：
 
 ```bash

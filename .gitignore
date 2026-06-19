@@ -16,6 +16,7 @@ model/
 outputs/
 logs/
 *.log
+third_party/sglang-v*/
 sglang_server/server_config.local.json
 sglang_server/generation_config.local.json
 sglang_server/dllm_algorithm_config.local.yaml

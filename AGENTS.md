@@ -42,6 +42,11 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
   - `threshold`
   - `edit_threshold`
 - Do not put LLaDA 2.1 threshold values in `generation_config.json`; that file is only for request-level extra body values.
+- SGLang source checkouts are local-only and ignored by Git. Current expected paths:
+  - local workspace: `third_party/sglang-v0.5.12.post1`
+  - server workspace: `/mnt/workspace/third_party/sglang-v0.5.12.post1`
+- If modifying SGLang for experiments, commit patch files under `sglang_patches/`, not the SGLang source tree.
+- Use `scripts/save_sglang_patch.sh <sglang-src-dir> <name.patch>` to export source changes and `scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1` to apply committed patches on the server.
 
 ## Experiment Outputs
 
