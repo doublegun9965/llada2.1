@@ -146,6 +146,20 @@ python experiments/trace_llada_generation.py \
   --editing-threshold 0.9
 ```
 
+固定阈值本地 GSM8K baseline，用于作为后续动态阈值/自适应策略的对比参照。默认 `threshold=0.5` 且关闭 edit：
+
+```bash
+python experiments/gsm8k_local_baseline.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --limit 100 \
+  --threshold 0.5 \
+  --editing-threshold off \
+  --gen-length 128 \
+  --block-length 32 \
+  --trace-limit 2
+```
+
 动态阈值本地 GSM8K 评测：根据当前 block 内已生成 token 比例自动切换阈值。默认前期 `threshold=0.9` 且关闭 edit，中期 `threshold=0.0` 且 `editing_threshold=0.9`，后期 `threshold=0.0` 且关闭 edit。为了避免低阈值时一轮填满整个 block，默认还会限制每轮写入数量：early 最多填 1 个 mask，mid/late 最多填 4 个 mask，mid 最多 edit 1 个 token：
 
 ```bash

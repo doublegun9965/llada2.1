@@ -54,6 +54,22 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
   - `summary.json`
   - `details_*.jsonl`
 
+## Experiment Command Quick Reference
+
+Fixed-threshold local GSM8K baseline for comparing later dynamic/adaptive strategies:
+
+```bash
+python experiments/gsm8k_local_baseline.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
+  --limit 100 \
+  --threshold 0.5 \
+  --editing-threshold off \
+  --gen-length 128 \
+  --block-length 32 \
+  --trace-limit 2
+```
+
 ## Coding Conventions
 
 - Keep scripts runnable directly from a fresh Git checkout without requiring editable install when practical. Add `src/` to `sys.path` in top-level experiment scripts if needed.
