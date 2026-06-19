@@ -149,14 +149,17 @@ python experiments/trace_llada_generation.py \
 动态阈值本地生成：根据当前 block 内已生成 token 比例自动切换阈值。默认前期 `threshold=0.9` 且关闭 edit，中期 `threshold=0.0` 且 `editing_threshold=0.9`，后期 `threshold=0.0` 且关闭 edit：
 
 ```bash
+cp experiments/dynamic_threshold_config.local.example.json experiments/dynamic_threshold_config.local.json
+vim experiments/dynamic_threshold_config.local.json
+
 python experiments/dynamic_threshold_generation.py \
   --prompt-file /mnt/workspace/data/my_prompt.txt \
   --model-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini \
   --gen-length 128 \
-  --block-length 32 \
-  --early-ratio 0.33 \
-  --late-ratio 0.75
+  --block-length 32
 ```
+
+脚本会优先读取 `experiments/dynamic_threshold_config.local.json`，否则读取 `experiments/dynamic_threshold_config.json`。命令行显式传入的动态阈值参数会覆盖配置文件。
 
 ### 本地配置文件
 

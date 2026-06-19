@@ -20,6 +20,7 @@ sglang_server/server_config.local.json
 sglang_server/generation_config.local.json
 sglang_server/dllm_algorithm_config.local.yaml
 sglang_server/server_env.local
+experiments/dynamic_threshold_config.local.json
 
 .DS_Store
 Thumbs.db

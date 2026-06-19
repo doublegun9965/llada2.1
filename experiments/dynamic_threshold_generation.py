@@ -28,6 +28,18 @@ class PhaseConfig:
     editing_threshold: float | None
 
 
+SCHEDULE_CONFIG_KEYS = {
+    "early_ratio",
+    "late_ratio",
+    "early_threshold",
+    "mid_threshold",
+    "late_threshold",
+    "early_editing_threshold",
+    "mid_editing_threshold",
+    "late_editing_threshold",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -38,6 +50,15 @@ def parse_args() -> argparse.Namespace:
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--prompt", help="Prompt text to send to the model.")
     prompt_group.add_argument("--prompt-file", help="UTF-8 text file containing the prompt.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Dynamic schedule JSON config. Defaults to "
+            "experiments/dynamic_threshold_config.local.json when present, "
+            "otherwise experiments/dynamic_threshold_config.json."
+        ),
+    )
     parser.add_argument("--model-path", default="model/llada2.1")
     parser.add_argument("--output-dir", default="outputs/dynamic_threshold_generation")
     parser.add_argument("--mask-count", type=int, default=0)
@@ -101,10 +122,55 @@ def parse_args() -> argparse.Namespace:
         help="Transformers device_map. Use 'none' to call model.to(--device) instead.",
     )
     parser.add_argument("--device", default=None, help="Used only when --device-map none.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    apply_config_defaults(args, sys.argv[1:])
+    return args
 
 
-def parse_optional_float(raw: str) -> float | None:
+def default_config_path() -> Path:
+    local_path = Path("experiments/dynamic_threshold_config.local.json")
+    if local_path.exists():
+        return local_path
+    return Path("experiments/dynamic_threshold_config.json")
+
+
+def cli_provided(argv: list[str], arg_name: str) -> bool:
+    flag = "--" + arg_name.replace("_", "-")
+    return any(item == flag or item.startswith(flag + "=") for item in argv)
+
+
+def load_schedule_config(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+
+    unknown_keys = sorted(set(config) - SCHEDULE_CONFIG_KEYS)
+    if unknown_keys:
+        raise ValueError(f"{path}: unsupported keys: {', '.join(unknown_keys)}")
+    return config
+
+
+def apply_config_defaults(args: argparse.Namespace, argv: list[str]) -> None:
+    explicit_config = args.config is not None
+    config_path = Path(args.config) if explicit_config else default_config_path()
+    if not config_path.exists():
+        if explicit_config:
+            raise FileNotFoundError(f"Dynamic threshold config not found: {config_path}")
+        return
+
+    config = load_schedule_config(config_path)
+    args.config = str(config_path)
+    for key, value in config.items():
+        if not cli_provided(argv, key):
+            setattr(args, key, value)
+
+
+def parse_optional_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
     value = raw.strip().lower()
     if value in {"off", "none", "disable", "disabled", "null"}:
         return None
@@ -558,6 +624,7 @@ def main() -> None:
     model_input_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
     summary = {
         "model_path": args.model_path,
+        "config": args.config,
         "prompt": prompt,
         "masked_prompt": masked_prompt,
         "use_chat_template": not args.no_chat_template,

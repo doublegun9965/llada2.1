@@ -1,0 +1,10 @@
+{
+  "early_ratio": 0.33,
+  "late_ratio": 0.75,
+  "early_threshold": 0.9,
+  "mid_threshold": 0.0,
+  "late_threshold": 0.0,
+  "early_editing_threshold": "off",
+  "mid_editing_threshold": 0.9,
+  "late_editing_threshold": "off"
+}
