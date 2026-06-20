@@ -100,7 +100,7 @@ python experiments/gsm8k_threshold_sweep.py \
 
 `--batch-size 4` 表示同一个阈值组合下同时发送 4 个 SGLang 请求；不同阈值组合仍会按顺序重启 SGLang，因为 LLaDA2.1 阈值是 server-startup 配置。
 
-SGLang 续写模式，给正确答案前缀：
+SGLang assistant-prefill 模式，给 assistant 一个正确答案开头再续写：
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
@@ -109,20 +109,8 @@ python experiments/gsm8k_threshold_sweep.py \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
   --max-tokens 512 \
-  --gold-prefix-tokens 40 \
-  --gold-prefix-style direct
-```
-
-SGLang 续写模式，拼接加噪 ground truth：
-
-```bash
-python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --limit 100 \
-  --thresholds 0.5 \
-  --edit-thresholds 0.0 \
-  --max-tokens 512 \
-  --gold-noise-ratio 0.3
+  --assistant-prefill-tokens 10 \
+  --batch-size 4
 ```
 
 本地模型 strict mask reconstruction，只填 `<|mask|>`：
@@ -397,12 +385,14 @@ outputs/gsm8k/run_<timestamp>/
   server_logs/
 ```
 
-### 正确答案前缀实验
+### Assistant Prefill 正确开头实验
 
-默认 prompt 只包含 GSM8K 问题。如果想测试“给模型一段正确推理开头是否能提升表现”，加：
+默认评测走 SGLang `/v1/chat/completions`，脚本把 GSM8K prompt 作为 user message 发送，由 SGLang 服务端套 chat template。
+
+如果想测试“给 assistant 一段正确推理开头是否能提升表现”，使用：
 
 ```bash
---gold-prefix-tokens 40
+--assistant-prefill-tokens 10
 ```
 
 完整例子：
@@ -414,61 +404,27 @@ python experiments/gsm8k_threshold_sweep.py \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
   --max-tokens 512 \
-  --gold-prefix-tokens 40
+  --assistant-prefill-tokens 10
 ```
 
-默认 `--gold-prefix-style instructed` 会加显式续写指令。如果想最直接地拼接：
-
-```bash
---gold-prefix-style direct
-```
-
-`direct` 实际发送：
+这个模式会在客户端用 tokenizer 构造：
 
 ```text
-{question}
-{gold answer 的前 40 个按空白分割的 token}
+chat_template(
+  user: "Solve the following grade-school math problem..."
+  assistant generation header
+)
+{gold solution 的前 10 个 tokenizer token}
 ```
 
-### 加噪完整 Ground Truth 实验
-
-如果想把完整 ground truth 直接拼到 question 后面，但按比例把其中一部分 token 替换成噪声，使用：
-
-```bash
---gold-noise-ratio 0.3
-```
-
-完整例子：
-
-```bash
-python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --limit 100 \
-  --thresholds 0.5 \
-  --edit-thresholds 0.0 \
-  --max-tokens 512 \
-  --gold-noise-ratio 0.3
-```
-
-实际发送：
-
-```text
-{question}
-{完整 gold answer，其中 30% 按空白分割的 token 被替换成 [MASK]，并且最终答案数字也会强制替换成 [MASK]}
-```
-
-注意：`--gold-noise-ratio` 控制的是随机加噪比例。为了避免模型直接抄最终答案，GSM8K 里的最后一行 `#### <number>` 中的 `<number>` 会额外强制 mask，即使它没有被随机采中。
+然后改走 `/v1/completions`，让 SGLang 从 assistant 的正确开头后继续生成。这样 gold prefix 不再被塞进 user prompt。
 
 常用参数：
 
-- `--gold-noise-ratio 0.0`：不做随机加噪，但最终答案数字仍然会被强制替换。
-- `--gold-noise-ratio 1.0`：把完整 ground truth 的所有 token 都替换。
-- `--gold-noise-token "[MASK]"`：修改替换用的噪声 token。
-- `--gold-noise-seed 0`：控制噪声位置，保证可复现。
-- `--gold-noise-ratio` 和 `--gold-prefix-tokens` 互斥，不能同时开。
-- 每条样本的 details 会记录 `gold_noised_solution`、`gold_noise_indices`、`gold_final_answer_noise_indices` 和最终发送给 SGLang 的 `prompt`。
-
-注意：这个实验仍然走 SGLang chat/completion，所以模型只会在 prompt 后面续写，不会原地替换 prompt 里的 `[MASK]`。如果要真正测试“模型能否还原 ground truth 内部的 mask”，请使用下面的本地模型重建实验。
+- `--assistant-prefill-tokens 0`：默认值，关闭 assistant prefill，使用普通 chat completion。
+- `--assistant-prefill-tokens 10`：取 gold solution 前 10 个 tokenizer token 作为 assistant prefill。
+- `--tokenizer-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini`：手动指定 tokenizer；默认使用 `server_config.local.json` 的 `model_path`。
+- 每条样本的 details 会记录 `user_prompt`、`assistant_prefix`、`assistant_prefix_token_ids`、`templated_prompt`、`completion` 和 `completion_with_assistant_prefix`。
 
 ### 本地模型 Mask 重建实验
 
@@ -914,25 +870,13 @@ python experiments/gsm8k_threshold_sweep.py \
   --max-tokens 256
 ```
 
-### Correct Context Prefix Experiment
+### Assistant Prefill Correct Prefix Experiment
 
-By default, the prompt only contains the GSM8K question. To test whether a correct reasoning prefix improves generation, add `--gold-prefix-tokens`.
+By default, the GSM8K sweep sends a user message through `/v1/chat/completions`, and SGLang applies the chat template on the server side.
 
-Example using the first 40 whitespace-separated tokens from the gold solution:
+To test whether a correct reasoning prefix improves generation, put the gold prefix after the assistant generation header with `--assistant-prefill-tokens`.
 
-```bash
-python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --limit 100 \
-  --thresholds 0.5 \
-  --edit-thresholds 0.0 \
-  --max-tokens 512 \
-  --gold-prefix-tokens 40
-```
-
-By default this uses `--gold-prefix-style instructed`, which wraps the prefix with explicit continuation instructions.
-
-For the minimal prompt style, use `direct`:
+Example using the first 10 tokenizer tokens from the gold solution:
 
 ```bash
 python experiments/gsm8k_threshold_sweep.py \
@@ -941,59 +885,27 @@ python experiments/gsm8k_threshold_sweep.py \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
   --max-tokens 512 \
-  --gold-prefix-tokens 40 \
-  --gold-prefix-style direct
+  --assistant-prefill-tokens 10
 ```
 
-`direct` sends:
+This client-side path builds:
 
 ```text
-{question}
-{first 40 whitespace-separated tokens from gold answer}
+chat_template(
+  user: "Solve the following grade-school math problem..."
+  assistant generation header
+)
+{first 10 tokenizer tokens from gold solution}
 ```
 
-Notes:
-
-- `--gold-prefix-tokens 0` is the default and disables this feature.
-- `--gold-prefix-style instructed` keeps the more explicit prompt; `--gold-prefix-style direct` only appends the gold prefix after the question.
-- The script uses whitespace-separated tokens, not the model tokenizer, to avoid adding tokenizer dependencies to the evaluation path.
-- Per-example details include `gold_solution`, `gold_prefix_style`, `gold_prefix`, and the final `prompt` sent to SGLang.
-
-### Noisy Ground Truth Context Experiment
-
-To directly append the full ground truth after the question, with a fixed fraction of its whitespace-separated tokens replaced by noise, use `--gold-noise-ratio`.
-
-Example replacing 30% of ground-truth tokens with `[MASK]`:
-
-```bash
-python experiments/gsm8k_threshold_sweep.py \
-  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
-  --limit 100 \
-  --thresholds 0.5 \
-  --edit-thresholds 0.0 \
-  --max-tokens 512 \
-  --gold-noise-ratio 0.3
-```
-
-This sends:
-
-```text
-{question}
-{full gold answer with 30% of whitespace-separated tokens replaced by [MASK], and the final answer number also forced to [MASK]}
-```
-
-`--gold-noise-ratio` controls the random noise fraction. To avoid leaking the label, the `<number>` in the final GSM8K line `#### <number>` is always masked as an extra forced mask, even if random sampling did not select it.
+Then it calls `/v1/completions`, so SGLang continues after the assistant prefill. The gold prefix is no longer placed inside the user prompt.
 
 Options:
 
-- `--gold-noise-ratio 0.0` adds no random noise, but still masks the final answer number.
-- `--gold-noise-ratio 1.0` masks every whitespace-separated ground-truth token.
-- `--gold-noise-token "[MASK]"` changes the replacement token.
-- `--gold-noise-seed 0` controls which token positions are noised, so runs are reproducible.
-- `--gold-noise-ratio` and `--gold-prefix-tokens` are mutually exclusive.
-- Per-example details include `gold_noised_solution`, `gold_noise_indices`, `gold_final_answer_noise_indices`, `gold_noise_ratio`, and the final `prompt`.
-
-Note: this experiment still uses SGLang chat/completion. The model continues after the prompt; it does not replace `[MASK]` tokens inside the prompt. To test true in-place masked reconstruction, use the local model reconstruction experiment below.
+- `--assistant-prefill-tokens 0` is the default and disables this feature.
+- `--assistant-prefill-tokens 10` uses the first 10 tokenizer tokens from the gold solution as assistant prefill.
+- `--tokenizer-path /mnt/workspace/models/inclusionAI/LLaDA2.1-mini` overrides the tokenizer path. By default, the script uses `model_path` from `server_config.local.json`.
+- Per-example details include `user_prompt`, `assistant_prefix`, `assistant_prefix_token_ids`, `templated_prompt`, `completion`, and `completion_with_assistant_prefix`.
 
 ### Local Model Mask Reconstruction Experiment
 

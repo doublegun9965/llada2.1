@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import os
-import random
 import re
 import socket
 import subprocess
@@ -99,37 +97,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument(
-        "--gold-prefix-tokens",
+        "--assistant-prefill-tokens",
         type=int,
         default=0,
         help=(
-            "Prepend the first N whitespace-separated tokens from the gold answer "
-            "as a correct-solution prefix. Default 0 disables this context."
+            "Use the first N tokenizer tokens from the gold solution as an assistant "
+            "prefill after the chat template assistant header. Default 0 disables."
         ),
     )
     parser.add_argument(
-        "--gold-prefix-style",
-        choices=["instructed", "direct"],
-        default="instructed",
-        help=(
-            "Prompt style when --gold-prefix-tokens is enabled. "
-            "'instructed' adds explicit continuation instructions; "
-            "'direct' sends question plus the gold prefix only."
-        ),
-    )
-    parser.add_argument(
-        "--gold-noise-ratio",
-        type=float,
+        "--tokenizer-path",
         default=None,
         help=(
-            "Directly append the full gold answer after the question, but replace this "
-            "fraction of whitespace-separated gold-answer tokens with --gold-noise-token. "
-            "The final answer number in the last '#### <number>' line is always masked "
-            "when this option is enabled. Omit this option to disable."
+            "Tokenizer path for --assistant-prefill-tokens. Defaults to server_config model_path."
         ),
     )
-    parser.add_argument("--gold-noise-token", default="[MASK]")
-    parser.add_argument("--gold-noise-seed", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs/gsm8k")
     parser.add_argument(
         "--batch-size",
@@ -400,91 +382,38 @@ def load_examples(args: argparse.Namespace) -> list[Example]:
     return examples
 
 
-def gold_prefix(answer: str, token_count: int) -> str:
-    if token_count <= 0:
-        return ""
-
-    pieces = re.findall(r"\S+\s*", answer)
-    return "".join(pieces[:token_count]).strip()
-
-
-def stable_seed(seed: int, example_id: str) -> int:
-    digest = hashlib.sha256(f"{seed}:{example_id}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big")
-
-
-def mask_token_piece(piece: str, noise_token: str) -> str:
-    match = re.match(r"(\S+)(\s*)", piece)
-    if not match:
-        return piece
-    return noise_token + match.group(2)
-
-
-def noised_gold_answer(
-    answer: str,
-    *,
-    ratio: float,
-    noise_token: str,
-    seed: int,
-    example_id: str,
-) -> tuple[str, list[int], list[int]]:
-    if ratio < 0 or ratio > 1:
-        raise ValueError("--gold-noise-ratio must be between 0.0 and 1.0")
-
-    pieces = list(re.finditer(r"\S+\s*", answer))
-    if not pieces:
-        return answer, [], []
-
-    num_noised = round(len(pieces) * ratio)
-    rng = random.Random(stable_seed(seed, example_id))
-    indices = sorted(rng.sample(range(len(pieces)), k=num_noised)) if num_noised else []
-    index_set = set(indices)
-
-    final_answer_indices: list[int] = []
-    answer_matches = list(ANSWER_RE.finditer(answer))
-    if answer_matches:
-        final_answer_span = answer_matches[-1].span(1)
-        for index, piece_match in enumerate(pieces):
-            token_start, token_end = piece_match.span()
-            if token_start < final_answer_span[1] and final_answer_span[0] < token_end:
-                index_set.add(index)
-                final_answer_indices.append(index)
-
-    all_indices = sorted(index_set)
-    noised_pieces = [
-        mask_token_piece(piece.group(0), noise_token) if index in index_set else piece.group(0)
-        for index, piece in enumerate(pieces)
-    ]
-    return "".join(noised_pieces).strip(), all_indices, final_answer_indices
-
-
-def build_prompt(
-    question: str,
-    answer_prefix: str = "",
-    gold_prefix_style: str = "instructed",
-    noisy_gold_answer: str | None = None,
-) -> str:
-    if noisy_gold_answer is not None:
-        return f"{question}\n{noisy_gold_answer}"
-
-    if answer_prefix:
-        if gold_prefix_style == "direct":
-            return f"{question}\n{answer_prefix}"
-
-        return (
-            "Solve the following grade-school math problem. "
-            "You are given the beginning of a correct solution. Continue from it, "
-            "then end with a final line exactly like: #### <number>\n\n"
-            f"Problem:\n{question}\n\n"
-            f"Beginning of a correct solution:\n{answer_prefix}\n\n"
-            "Continue the solution:"
-        )
-
+def build_gsm8k_user_prompt(question: str) -> str:
     return (
         "Solve the following grade-school math problem. "
         "Show concise reasoning, then end with a final line exactly like: #### <number>\n\n"
         f"Problem:\n{question}"
     )
+
+
+def gold_token_prefix(tokenizer: Any, answer: str, token_count: int) -> tuple[str, list[int]]:
+    if token_count <= 0:
+        return "", []
+
+    token_ids = tokenizer.encode(answer, add_special_tokens=False)[:token_count]
+    return tokenizer.decode(token_ids, skip_special_tokens=False), [int(token_id) for token_id in token_ids]
+
+
+def build_assistant_prefill_prompt(
+    *,
+    tokenizer: Any,
+    user_prompt: str,
+    gold_solution: str,
+    prefill_tokens: int,
+) -> tuple[str, str, list[int]]:
+    assistant_prefix, prefix_token_ids = gold_token_prefix(
+        tokenizer, gold_solution, prefill_tokens
+    )
+    chat_prefix = tokenizer.apply_chat_template(
+        [{"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    return chat_prefix + assistant_prefix, assistant_prefix, prefix_token_ids
 
 
 def completion_tokens(raw: dict[str, Any]) -> int | None:
@@ -526,44 +455,48 @@ def evaluate_one_example(
     edit_threshold: float,
     temperature: float,
     max_tokens: int,
-    gold_prefix_tokens: int,
-    gold_prefix_style: str,
-    gold_noise_ratio: float | None,
-    gold_noise_token: str,
-    gold_noise_seed: int,
+    assistant_prefill_tokens: int,
+    tokenizer: Any | None,
     sleep_seconds: float,
 ) -> dict[str, Any]:
-    answer_prefix = gold_prefix(example.answer, gold_prefix_tokens)
-    noised_answer = None
-    noise_indices: list[int] = []
-    final_answer_noise_indices: list[int] = []
-    if gold_noise_ratio is not None:
-        noised_answer, noise_indices, final_answer_noise_indices = noised_gold_answer(
-            example.answer,
-            ratio=gold_noise_ratio,
-            noise_token=gold_noise_token,
-            seed=gold_noise_seed,
-            example_id=example.example_id,
-        )
-    prompt = build_prompt(
-        example.question,
-        answer_prefix=answer_prefix,
-        gold_prefix_style=gold_prefix_style,
-        noisy_gold_answer=noised_answer,
-    )
+    user_prompt = build_gsm8k_user_prompt(example.question)
+    request_prompt = user_prompt
+    assistant_prefix = ""
+    assistant_prefix_token_ids: list[int] = []
+    request_mode = "chat"
+
     started = time.perf_counter()
-    result = client.chat_completion(
-        model=model,
-        prompt=prompt,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        extra_body=extra_body,
-    )
+    if assistant_prefill_tokens > 0:
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when assistant_prefill_tokens > 0")
+        request_prompt, assistant_prefix, assistant_prefix_token_ids = build_assistant_prefill_prompt(
+            tokenizer=tokenizer,
+            user_prompt=user_prompt,
+            gold_solution=example.answer,
+            prefill_tokens=assistant_prefill_tokens,
+        )
+        request_mode = "completion_with_assistant_prefill"
+        result = client.completion(
+            model=model,
+            prompt=request_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
+        )
+    else:
+        result = client.chat_completion(
+            model=model,
+            prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
+        )
     latency = time.perf_counter() - started
     if sleep_seconds > 0:
         time.sleep(sleep_seconds)
 
-    prediction = extract_answer(result.text)
+    answer_text = assistant_prefix + result.text
+    prediction = extract_answer(answer_text)
     is_correct = prediction is not None and example.gold is not None and prediction == example.gold
     tokens = completion_tokens(result.raw)
     return {
@@ -575,22 +508,20 @@ def evaluate_one_example(
         "question": example.question,
         "gold_answer": example.gold,
         "gold_solution": example.answer,
-        "gold_prefix_tokens": gold_prefix_tokens,
-        "gold_prefix_style": gold_prefix_style,
-        "gold_prefix": answer_prefix,
-        "gold_noise_ratio": gold_noise_ratio,
-        "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
-        "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
-        "gold_noise_indices": noise_indices,
-        "gold_final_answer_noise_indices": final_answer_noise_indices,
-        "gold_noised_solution": noised_answer,
-        "prompt": prompt,
+        "assistant_prefill_tokens": assistant_prefill_tokens,
+        "assistant_prefix": assistant_prefix,
+        "assistant_prefix_token_ids": assistant_prefix_token_ids,
+        "request_mode": request_mode,
+        "user_prompt": user_prompt,
+        "prompt": user_prompt,
+        "templated_prompt": request_prompt if assistant_prefill_tokens > 0 else None,
         "predicted_answer": prediction,
         "correct": is_correct,
         "latency_seconds": latency,
         "completion_tokens": tokens,
         "completion_chars": len(result.text),
         "completion": result.text,
+        "completion_with_assistant_prefix": answer_text,
     }
 
 
@@ -605,11 +536,8 @@ def evaluate_threshold_pair(
     edit_threshold: float,
     temperature: float,
     max_tokens: int,
-    gold_prefix_tokens: int,
-    gold_prefix_style: str,
-    gold_noise_ratio: float | None,
-    gold_noise_token: str,
-    gold_noise_seed: int,
+    assistant_prefill_tokens: int,
+    tokenizer: Any | None,
     batch_size: int,
     sleep_seconds: float,
     show_progress: bool,
@@ -645,11 +573,8 @@ def evaluate_threshold_pair(
                     edit_threshold=edit_threshold,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    gold_prefix_tokens=gold_prefix_tokens,
-                    gold_prefix_style=gold_prefix_style,
-                    gold_noise_ratio=gold_noise_ratio,
-                    gold_noise_token=gold_noise_token,
-                    gold_noise_seed=gold_noise_seed,
+                    assistant_prefill_tokens=assistant_prefill_tokens,
+                    tokenizer=tokenizer,
                     sleep_seconds=sleep_seconds,
                 )
                 for index, example in enumerate(examples, start=1)
@@ -697,11 +622,7 @@ def evaluate_threshold_pair(
         "threshold": threshold,
         "edit_threshold": edit_threshold,
         "batch_size": batch_size,
-        "gold_prefix_tokens": gold_prefix_tokens,
-        "gold_prefix_style": gold_prefix_style if gold_prefix_tokens > 0 else "none",
-        "gold_noise_ratio": gold_noise_ratio,
-        "gold_noise_token": gold_noise_token if gold_noise_ratio is not None else None,
-        "gold_noise_seed": gold_noise_seed if gold_noise_ratio is not None else None,
+        "assistant_prefill_tokens": assistant_prefill_tokens,
         "num_examples": total,
         "correct": correct_count,
         "accuracy": correct_count / total if total else 0.0,
@@ -746,11 +667,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "threshold",
         "edit_threshold",
         "batch_size",
-        "gold_prefix_tokens",
-        "gold_prefix_style",
-        "gold_noise_ratio",
-        "gold_noise_token",
-        "gold_noise_seed",
+        "assistant_prefill_tokens",
         "num_examples",
         "correct",
         "accuracy",
@@ -779,12 +696,12 @@ def main() -> None:
     settings = load_settings()
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.assistant_prefill_tokens < 0:
+        raise ValueError("--assistant-prefill-tokens must be non-negative")
 
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
     threshold_pairs = [(threshold, edit) for threshold in thresholds for edit in edit_thresholds]
-    if args.gold_noise_ratio is not None and args.gold_prefix_tokens > 0:
-        raise ValueError("--gold-noise-ratio and --gold-prefix-tokens are mutually exclusive.")
     if args.use_running_server and len(threshold_pairs) != 1:
         raise ValueError(
             "--use-running-server can only evaluate one threshold pair because SGLang "
@@ -803,6 +720,24 @@ def main() -> None:
     server_config_path = Path(args.server_config) if args.server_config else default_server_config_path()
     server_config = load_config(server_config_path)
     client_base_url = settings.base_url if args.use_running_server else managed_base_url(server_config)
+    tokenizer = None
+    if args.assistant_prefill_tokens > 0:
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "--assistant-prefill-tokens requires transformers on the client side."
+            ) from exc
+
+        tokenizer_path = args.tokenizer_path or str(server_config["model_path"])
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            trust_remote_code=bool(server_config.get("trust_remote_code", True)),
+        )
+        print(
+            "Using assistant prefill: "
+            f"{args.assistant_prefill_tokens} tokenizer token(s) from {tokenizer_path}"
+        )
 
     summaries: list[dict[str, Any]] = []
     for threshold, edit_threshold in threshold_pairs:
@@ -852,11 +787,8 @@ def main() -> None:
                 edit_threshold=edit_threshold,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
-                gold_prefix_tokens=args.gold_prefix_tokens,
-                gold_prefix_style=args.gold_prefix_style,
-                gold_noise_ratio=args.gold_noise_ratio,
-                gold_noise_token=args.gold_noise_token,
-                gold_noise_seed=args.gold_noise_seed,
+                assistant_prefill_tokens=args.assistant_prefill_tokens,
+                tokenizer=tokenizer,
                 batch_size=args.batch_size,
                 sleep_seconds=args.sleep_seconds,
                 show_progress=not args.no_progress,
@@ -885,9 +817,7 @@ def main() -> None:
         write_summary(output_dir, summaries)
         progress_write(
             f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
-            f"gold_prefix_tokens={args.gold_prefix_tokens} "
-            f"gold_prefix_style={args.gold_prefix_style if args.gold_prefix_tokens > 0 else 'none'} "
-            f"gold_noise_ratio={args.gold_noise_ratio} "
+            f"assistant_prefill_tokens={args.assistant_prefill_tokens} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
             f"wall_time={summary['wall_time_seconds']:.2f}s "

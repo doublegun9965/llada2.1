@@ -51,3 +51,32 @@ class SGLangClient:
         data = response.json()
         text = data["choices"][0]["message"]["content"]
         return GenerationResult(text=text, raw=data)
+
+    def completion(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        temperature: float = 0.0,
+        max_tokens: int = 256,
+        extra_body: dict[str, Any] | None = None,
+    ) -> GenerationResult:
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if extra_body:
+            payload.update(extra_body)
+
+        response = httpx.post(
+            f"{self.base_url}/completions",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = data["choices"][0]["text"]
+        return GenerationResult(text=text, raw=data)

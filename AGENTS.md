@@ -92,6 +92,19 @@ python experiments/gsm8k_threshold_sweep.py \
   --batch-size 4
 ```
 
+SGLang GSM8K assistant-prefill experiment, where the gold solution prefix is placed after the assistant generation header and the request uses `/v1/completions`:
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --assistant-prefill-tokens 10 \
+  --batch-size 4
+```
+
 Render SGLang dLLM trace JSONL:
 
 ```bash
