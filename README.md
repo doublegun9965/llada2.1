@@ -308,7 +308,7 @@ trace_max_events: null
 如果这里把 `trace_path` 设为非空，GSM8K sweep 不会给主评测的全部样本写 trace；它会先正常评测，然后只把预测错误的样本用同一组阈值单独重跑一次，trace 写到本次输出目录：
 
 ```text
-outputs/gsm8k/run_<timestamp>/wrong_traces/
+outputs/gsm8k/run_<timestamp>/wrong_traces/          # trace .jsonl and rendered .md
 outputs/gsm8k/run_<timestamp>/wrong_trace_details/
 ```
 
@@ -848,7 +848,7 @@ trace_max_events: null
 If `trace_path` is non-null in this template, the GSM8K sweep does not trace every main-evaluation sample. It first runs the normal evaluation, then reruns only wrong predictions with the same threshold pair and writes traces under the timestamped output directory:
 
 ```text
-outputs/gsm8k/run_<timestamp>/wrong_traces/
+outputs/gsm8k/run_<timestamp>/wrong_traces/          # trace .jsonl and rendered .md
 outputs/gsm8k/run_<timestamp>/wrong_trace_details/
 ```
 

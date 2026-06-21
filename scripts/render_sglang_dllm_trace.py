@@ -130,17 +130,19 @@ def render_event(tokenizer: Any, event: dict[str, Any]) -> list[str]:
     return lines
 
 
-def main() -> None:
-    args = parse_args()
-
+def render_trace_to_markdown(
+    *,
+    trace_path: Path,
+    model_path: str,
+    output_md: Path,
+    trust_remote_code: bool = False,
+) -> None:
     from transformers import AutoTokenizer
 
-    trace_path = Path(args.trace_path)
-    output_md = Path(args.output_md) if args.output_md else trace_path.with_suffix(".md")
     events = read_events(trace_path)
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_path,
-        trust_remote_code=args.trust_remote_code,
+        model_path,
+        trust_remote_code=trust_remote_code,
     )
 
     lines = [
@@ -149,7 +151,7 @@ def main() -> None:
         "## Summary",
         "",
         f"- Trace path: `{trace_path}`",
-        f"- Model path: `{args.model_path}`",
+        f"- Model path: `{model_path}`",
         f"- Events: `{len(events)}`",
         "",
     ]
@@ -177,6 +179,18 @@ def main() -> None:
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_md.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {output_md}")
+
+
+def main() -> None:
+    args = parse_args()
+    trace_path = Path(args.trace_path)
+    output_md = Path(args.output_md) if args.output_md else trace_path.with_suffix(".md")
+    render_trace_to_markdown(
+        trace_path=trace_path,
+        model_path=args.model_path,
+        output_md=output_md,
+        trust_remote_code=args.trust_remote_code,
+    )
 
 
 if __name__ == "__main__":

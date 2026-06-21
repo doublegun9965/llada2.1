@@ -25,6 +25,7 @@ if str(SRC_DIR) not in sys.path:
 
 from llada_experiments import SGLangClient, load_settings
 from sglang_server.launch_sglang import build_command, load_config
+from scripts.render_sglang_dllm_trace import render_trace_to_markdown
 
 import httpx
 import yaml
@@ -718,6 +719,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "server_log_path",
         "wrong_trace_num_examples",
         "wrong_trace_path",
+        "wrong_trace_markdown_path",
         "wrong_trace_details_path",
         "wrong_trace_dllm_config_path",
         "wrong_trace_server_log_path",
@@ -777,17 +779,21 @@ def collect_wrong_sample_traces(
         return {
             "wrong_trace_num_examples": 0,
             "wrong_trace_path": None,
+            "wrong_trace_markdown_path": None,
             "wrong_trace_details_path": None,
             "wrong_trace_dllm_config_path": None,
             "wrong_trace_server_log_path": None,
         }
 
     trace_path = output_dir / "wrong_traces" / f"{pair_name}.jsonl"
+    trace_markdown_path = output_dir / "wrong_traces" / f"{pair_name}.md"
     trace_details_path = output_dir / "wrong_trace_details" / f"details_{pair_name}.jsonl"
     trace_dllm_config_path = output_dir / "dllm_configs" / f"{pair_name}_wrong_trace.yaml"
     trace_server_log_path = output_dir / "server_logs" / f"{pair_name}_wrong_trace.log"
     if trace_path.exists():
         trace_path.unlink()
+    if trace_markdown_path.exists():
+        trace_markdown_path.unlink()
 
     write_dllm_algorithm_config(
         trace_dllm_config_path,
@@ -832,6 +838,12 @@ def collect_wrong_sample_traces(
             sleep_seconds=sleep_seconds,
             show_progress=show_progress,
         )
+        render_trace_to_markdown(
+            trace_path=trace_path,
+            model_path=str(server_config["model_path"]),
+            output_md=trace_markdown_path,
+            trust_remote_code=bool(server_config.get("trust_remote_code", True)),
+        )
     except Exception as exc:
         exit_code = process.poll()
         status = (
@@ -850,6 +862,7 @@ def collect_wrong_sample_traces(
     return {
         "wrong_trace_num_examples": len(wrong_examples),
         "wrong_trace_path": str(trace_path),
+        "wrong_trace_markdown_path": str(trace_markdown_path),
         "wrong_trace_details_path": str(trace_details_path),
         "wrong_trace_dllm_config_path": str(trace_dllm_config_path),
         "wrong_trace_server_log_path": str(trace_server_log_path),
@@ -988,6 +1001,7 @@ def main() -> None:
         wrong_trace_summary = {
             "wrong_trace_num_examples": 0,
             "wrong_trace_path": None,
+            "wrong_trace_markdown_path": None,
             "wrong_trace_details_path": None,
             "wrong_trace_dllm_config_path": None,
             "wrong_trace_server_log_path": None,
