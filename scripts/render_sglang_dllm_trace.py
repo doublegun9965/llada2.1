@@ -70,6 +70,7 @@ def render_event(tokenizer: Any, event: dict[str, Any]) -> list[str]:
 
     mask_fills = event.get("mask_fills") or []
     edits = event.get("edits") or []
+    remasks = event.get("remasks") or []
 
     if mask_fills:
         lines.extend(["Mask fills:", ""])
@@ -97,7 +98,20 @@ def render_event(tokenizer: Any, event: dict[str, Any]) -> list[str]:
             )
         lines.append("")
 
-    if not mask_fills and not edits:
+    if remasks:
+        lines.extend(["Remasks:", ""])
+        for item in remasks:
+            old_token = decode_token(tokenizer, item["old_token_id"])
+            new_token = decode_token(tokenizer, item["new_token_id"])
+            lines.append(
+                "- "
+                f"block_offset={item['block_offset']} "
+                f"prob={item['prob']:.6f} "
+                f"{markdown_token(old_token)} -> {markdown_token(new_token)}"
+            )
+        lines.append("")
+
+    if not mask_fills and not edits and not remasks:
         lines.extend(["No token changes recorded in this iteration.", ""])
 
     block_token_ids = event.get("block_token_ids")
@@ -150,6 +164,8 @@ def main() -> None:
                 f"- Threshold: `{first.get('threshold')}`",
                 f"- Edit threshold: `{first.get('edit_threshold')}`",
                 f"- Max post edit steps: `{first.get('max_post_edit_steps')}`",
+                f"- Confidence remask threshold: `{first.get('confidence_remask_threshold')}`",
+                f"- Confidence remask max count: `{first.get('confidence_remask_max_count')}`",
                 "",
             ]
         )

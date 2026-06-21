@@ -2,6 +2,8 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
+confidence_remask_threshold: null
+confidence_remask_max_count: 3
 trace_path: null
 trace_snapshot_every: 1
 trace_max_events: null

@@ -50,6 +50,7 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 - `sglang_patches/deterministic_dllm_compat.patch` is the current SGLang `0.5.12.post1` + LLaDA 2.1 dLLM deterministic compatibility patch.
 - After applying that patch, `sglang_server/server_config.local.json` can set `"enable_deterministic_inference": true`; `launch_sglang.py` will pass `--enable-deterministic-inference`.
 - `sglang_patches/dllm_trace.patch` records server-side JointThreshold M2T/T2T trace events when `trace_path` is set in the DLLM YAML config.
+- `sglang_patches/zz_confidence_remask.patch` adds optional JointThreshold confidence remasking and depends on `dllm_trace.patch`.
 - `scripts/apply_sglang_patches.sh <sglang-src-dir> <patch-name.patch>` applies only selected patches; without patch names it applies all patches.
 - Use `scripts/render_sglang_dllm_trace.py <trace.jsonl> --model-path <model>` to render SGLang dLLM trace JSONL into Markdown.
 

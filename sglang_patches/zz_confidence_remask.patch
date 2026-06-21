@@ -1,0 +1,104 @@
+diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+index 41f00c2..edd2150 100644
+--- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
++++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+@@ -26,6 +26,17 @@ class JointThreshold(DllmAlgorithm):
+             "max_post_edit_steps", 16
+         )
+         self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
++        confidence_remask_threshold = config.algorithm_config.get(
++            "confidence_remask_threshold"
++        )
++        self.confidence_remask_threshold = (
++            None
++            if confidence_remask_threshold is None
++            else float(confidence_remask_threshold)
++        )
++        self.confidence_remask_max_count = int(
++            config.algorithm_config.get("confidence_remask_max_count", 3)
++        )
+         self.trace_path = config.algorithm_config.get("trace_path")
+         self.trace_snapshot_every = int(
+             config.algorithm_config.get("trace_snapshot_every", 1)
+@@ -101,6 +112,9 @@ class JointThreshold(DllmAlgorithm):
+             start_list.append(prompt_mask.sum().item())
+ 
+         post_edit_steps = torch.zeros(batch_size, dtype=torch.int32, device=device)
++        remask_counts = torch.zeros(
++            batch_size, self.block_size, dtype=torch.int32, device=device
++        )
+ 
+         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+         # Controls whether to perform an additional forward pass for KV cache persistence.
+@@ -177,12 +191,9 @@ class JointThreshold(DllmAlgorithm):
+                 )
+ 
+                 transfer_index = mask_transfer_index | edit_transfer_index
+-                if not transfer_index.any():
+-                    finished[i] = True
+-                    continue
+-
+                 mask_events = []
+                 edit_events = []
++                remask_events = []
+                 should_trace_snapshot = (
+                     self.trace_snapshot_every > 0
+                     and global_iteration % self.trace_snapshot_every == 0
+@@ -203,7 +214,44 @@ class JointThreshold(DllmAlgorithm):
+                         event_type="edit",
+                     )
+ 
+-                curr_input_ids[transfer_index] = x[transfer_index]
++                if transfer_index.any():
++                    curr_input_ids[transfer_index] = x[transfer_index]
++
++                # Confidence remask: after M2T/T2T, reopen low-confidence
++                # generated tokens by turning them back into mask tokens.
++                remask_index = torch.zeros_like(mask_index)
++                if self.confidence_remask_threshold is not None:
++                    post_transfer_input_ids = curr_input_ids.clone()
++                    current_token_probs = torch.squeeze(
++                        torch.gather(
++                            F.softmax(curr_logits, dim=-1),
++                            dim=-1,
++                            index=torch.unsqueeze(curr_input_ids, -1),
++                        ),
++                        -1,
++                    )
++                    remask_index = (
++                        ~curr_prompt_mask
++                        & (curr_input_ids != self.mask_id)
++                        & (current_token_probs < self.confidence_remask_threshold)
++                        & (remask_counts[i] < self.confidence_remask_max_count)
++                    )
++                    if self._trace_enabled():
++                        remask_events = self._trace_records(
++                            transfer_index=remask_index,
++                            old_tokens=post_transfer_input_ids,
++                            new_tokens=torch.full_like(curr_input_ids, self.mask_id),
++                            probs=current_token_probs,
++                            event_type="remask",
++                        )
++                    if remask_index.any():
++                        curr_input_ids[remask_index] = self.mask_id
++                        remask_counts[i][remask_index] += 1
++
++                if not transfer_index.any() and not remask_index.any():
++                    finished[i] = True
++                    continue
++
+                 active_mask_count_after = int((curr_input_ids == self.mask_id).sum().item())
+                 if self._trace_enabled():
+                     event = {
+@@ -219,8 +267,11 @@ class JointThreshold(DllmAlgorithm):
+                         "active_mask_count_before": active_mask_count_before,
+                         "active_mask_count_after": active_mask_count_after,
+                         "mask_selected_by": mask_selected_by,
++                        "confidence_remask_threshold": self.confidence_remask_threshold,
++                        "confidence_remask_max_count": self.confidence_remask_max_count,
+                         "mask_fills": mask_events,
+                         "edits": edit_events,
++                        "remasks": remask_events,
+                     }
+                     if should_trace_snapshot:
+                         event["block_token_ids"] = curr_input_ids.detach().cpu().tolist()
