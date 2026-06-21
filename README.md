@@ -303,6 +303,15 @@ trace_snapshot_every: 1
 trace_max_events: null
 ```
 
+`experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。也就是说，`confidence_remask_threshold`、`confidence_remask_max_count`、`max_post_edit_steps` 等本地配置会自动带进 sweep。
+
+如果这里把 `trace_path` 设为非空，GSM8K sweep 不会给主评测的全部样本写 trace；它会先正常评测，然后只把预测错误的样本用同一组阈值单独重跑一次，trace 写到本次输出目录：
+
+```text
+outputs/gsm8k/run_<timestamp>/wrong_traces/
+outputs/gsm8k/run_<timestamp>/wrong_trace_details/
+```
+
 修改 `threshold` 或 `edit_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
 
 ### Confidence Remask 模式
@@ -832,6 +841,15 @@ confidence_remask_max_count: 3
 trace_path: null
 trace_snapshot_every: 1
 trace_max_events: null
+```
+
+`experiments/gsm8k_threshold_sweep.py` reads this YAML as the base template and then overrides `threshold` and `edit_threshold` for each command-line threshold pair. Local options such as `confidence_remask_threshold`, `confidence_remask_max_count`, and `max_post_edit_steps` are carried into the sweep configs.
+
+If `trace_path` is non-null in this template, the GSM8K sweep does not trace every main-evaluation sample. It first runs the normal evaluation, then reruns only wrong predictions with the same threshold pair and writes traces under the timestamped output directory:
+
+```text
+outputs/gsm8k/run_<timestamp>/wrong_traces/
+outputs/gsm8k/run_<timestamp>/wrong_trace_details/
 ```
 
 Changing `threshold` or `edit_threshold` requires restarting SGLang.

@@ -38,6 +38,8 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 - `experiments/gsm8k_mask_reconstruct.py` defaults to strict reconstruction: fill masked tokens only. Passing `--editing-threshold` enables reconstruction + editing of non-mask tokens inside the gold solution span.
 - For SGLang `0.5.12.post1`, LLaDA 2.1 `JointThreshold` parameters are server-startup DLLM algorithm config values, not OpenAI request-body values.
 - Threshold sweeps must generate a YAML file and restart SGLang for each threshold pair using `--dllm-algorithm JointThreshold --dllm-algorithm-config <path>`.
+- `experiments/gsm8k_threshold_sweep.py` reads `sglang_server/dllm_algorithm_config.local.yaml` as a template when present, then overrides `threshold` and `edit_threshold` for each sweep pair. Keep non-swept DLLM options such as confidence remasking in the local YAML.
+- If the DLLM template has a non-null `trace_path`, `gsm8k_threshold_sweep.py` should avoid tracing every main-evaluation sample and instead rerun only wrong predictions with trace enabled under the timestamped output directory.
 - Current SGLang `JointThreshold` YAML keys are:
   - `threshold`
   - `edit_threshold`
