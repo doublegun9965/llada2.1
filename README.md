@@ -172,6 +172,13 @@ python scripts/compare_gsm8k_details.py \
   --label-from variant
 ```
 
+把单个或多个 `details_threshold_<value>_edit_<value>.jsonl` 里的错误样本写成 Markdown，方便逐题排查：
+
+```bash
+python scripts/write_gsm8k_error_report.py \
+  outputs/gsm8k_threshold_sweep/run_<timestamp>/details_threshold_0p5_edit_0p0.jsonl
+```
+
 记录本地 LLaDA2.1 `generate()` 的逐轮轨迹，观察每轮填了哪些 mask、edit 了哪些 token：
 
 ```bash
@@ -1176,6 +1183,13 @@ python experiments/gsm8k_threshold_sweep.py \
   --thresholds 0.5 \
   --edit-thresholds 0.0 \
   --max-tokens 512
+```
+
+Render wrong records from one or more threshold-sweep details files into a Markdown report:
+
+```bash
+python scripts/write_gsm8k_error_report.py \
+  outputs/gsm8k_threshold_sweep/run_<timestamp>/details_threshold_0p5_edit_0p0.jsonl
 ```
 
 `--use-running-server` can only evaluate one threshold pair, because thresholds are fixed when SGLang starts.

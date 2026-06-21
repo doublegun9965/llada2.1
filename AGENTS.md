@@ -106,6 +106,13 @@ python experiments/gsm8k_threshold_sweep.py \
   --batch-size 4
 ```
 
+Render wrong records from one or more GSM8K threshold-sweep details files into a Markdown report:
+
+```bash
+python scripts/write_gsm8k_error_report.py \
+  outputs/gsm8k_threshold_sweep/run_<timestamp>/details_threshold_0p5_edit_0p0.jsonl
+```
+
 Render SGLang dLLM trace JSONL:
 
 ```bash
