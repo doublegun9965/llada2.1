@@ -852,6 +852,8 @@ outputs/gsm8k/run_<timestamp>/wrong_traces/          # trace .jsonl and rendered
 outputs/gsm8k/run_<timestamp>/wrong_trace_details/
 ```
 
+SGLang startup sends an internal warmup prompt such as `The capital city of France is`; the sweep script clears the trace after startup and before replaying wrong GSM8K examples, so rendered wrong-sample traces should not include that warmup request.
+
 Changing `threshold` or `edit_threshold` requires restarting SGLang.
 
 ### Confidence Remask Mode

@@ -817,6 +817,14 @@ def collect_wrong_sample_traces(
     )
     try:
         wait_for_server(client_base_url, process, startup_timeout_seconds)
+        # SGLang sends an internal warmup request during startup with a fixed
+        # prompt like "The capital city of France is". It can hit the dLLM
+        # trace hook, so clear the trace after the server is ready and before
+        # replaying actual wrong GSM8K examples.
+        if trace_path.exists():
+            trace_path.unlink()
+        if trace_markdown_path.exists():
+            trace_markdown_path.unlink()
         client = SGLangClient(
             base_url=client_base_url,
             api_key=settings.api_key,

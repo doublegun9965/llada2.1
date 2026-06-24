@@ -40,6 +40,7 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 - Threshold sweeps must generate a YAML file and restart SGLang for each threshold pair using `--dllm-algorithm JointThreshold --dllm-algorithm-config <path>`.
 - `experiments/gsm8k_threshold_sweep.py` reads `sglang_server/dllm_algorithm_config.local.yaml` as a template when present, then overrides `threshold` and `edit_threshold` for each sweep pair. Keep non-swept DLLM options such as confidence remasking in the local YAML.
 - If the DLLM template has a non-null `trace_path`, `gsm8k_threshold_sweep.py` should avoid tracing every main-evaluation sample and instead rerun only wrong predictions with trace enabled under the timestamped output directory, then render those trace JSONL files to Markdown.
+- SGLang startup can emit an internal warmup trace for `The capital city of France is`; clear wrong-sample trace files after server readiness and before replaying real GSM8K examples.
 - Current SGLang `JointThreshold` YAML keys are:
   - `threshold`
   - `edit_threshold`
