@@ -296,40 +296,16 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
-confidence_remask_threshold: null
-confidence_remask_max_count: 3
 trace_path: null
 trace_snapshot_every: 1
 trace_max_events: null
 ```
 
-`experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。也就是说，`confidence_remask_threshold`、`confidence_remask_max_count`、`max_post_edit_steps` 等本地配置会自动带进 sweep。
+`experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。也就是说，`max_post_edit_steps` 等本地配置会自动带进 sweep。
 
 GSM8K sweep 默认会忽略模板里的 `trace_path`，避免普通 sweep 意外写大量 trace。需要记录主评测阶段的 dLLM token 轨迹并生成统计表时，使用 `--critical-token-analysis`，脚本会为每个阈值组合自动写本次运行专用的 `trace_path`。
 
 修改 `threshold` 或 `edit_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
-
-### Confidence Remask 模式
-
-这个模式需要给 SGLang 应用 patch：
-
-```bash
-scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch zz_confidence_remask.patch
-```
-
-然后在 `sglang_server/dllm_algorithm_config.local.yaml` 里开启：
-
-```yaml
-confidence_remask_threshold: 0.3
-confidence_remask_max_count: 3
-```
-
-含义：
-
-- 每轮 M2T/T2T 之后，检查当前 block 内非 prompt、非 mask token 的当前 token 概率。
-- 如果概率低于 `confidence_remask_threshold`，把该 token 重新置为 `<|mask|>`。
-- 每个 block 位置最多 remask `confidence_remask_max_count` 次，避免同一个位置无限重掩码。
-- 默认 `confidence_remask_threshold: null`，表示关闭该模式。
 
 ### SGLang dLLM Trace
 
@@ -863,35 +839,16 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
-confidence_remask_threshold: null
-confidence_remask_max_count: 3
 trace_path: null
 trace_snapshot_every: 1
 trace_max_events: null
 ```
 
-`experiments/gsm8k_threshold_sweep.py` reads this YAML as the base template and then overrides `threshold` and `edit_threshold` for each command-line threshold pair. Local options such as `confidence_remask_threshold`, `confidence_remask_max_count`, and `max_post_edit_steps` are carried into the sweep configs.
+`experiments/gsm8k_threshold_sweep.py` reads this YAML as the base template and then overrides `threshold` and `edit_threshold` for each command-line threshold pair. Local options such as `max_post_edit_steps` are carried into the sweep configs.
 
 The GSM8K sweep ignores `trace_path` from this template by default, so normal sweeps do not accidentally write large traces. To record main-evaluation dLLM token trajectories and generate analysis tables, pass `--critical-token-analysis`; the script writes a run-specific `trace_path` for each threshold pair.
 
 Changing `threshold` or `edit_threshold` requires restarting SGLang.
-
-### Confidence Remask Mode
-
-Apply the dependent patches:
-
-```bash
-scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch zz_confidence_remask.patch
-```
-
-Enable it in `sglang_server/dllm_algorithm_config.local.yaml`:
-
-```yaml
-confidence_remask_threshold: 0.3
-confidence_remask_max_count: 3
-```
-
-After each M2T/T2T denoising step, non-prompt generated tokens whose current-token probability is below the threshold are turned back into `<|mask|>`. Each block position can be remasked at most `confidence_remask_max_count` times. The default `confidence_remask_threshold: null` disables this mode.
 
 ### SGLang dLLM Trace
 

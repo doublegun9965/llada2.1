@@ -166,8 +166,6 @@ def render_trace_to_markdown(
                 f"- Threshold: `{first.get('threshold')}`",
                 f"- Edit threshold: `{first.get('edit_threshold')}`",
                 f"- Max post edit steps: `{first.get('max_post_edit_steps')}`",
-                f"- Confidence remask threshold: `{first.get('confidence_remask_threshold')}`",
-                f"- Confidence remask max count: `{first.get('confidence_remask_max_count')}`",
                 "",
             ]
         )

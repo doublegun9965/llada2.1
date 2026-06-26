@@ -26,7 +26,7 @@ From this repository:
 scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1
 ```
 
-The script checks every `*.patch` before applying it.
+The script checks and applies each `*.patch` sequentially.
 
 To apply only selected patches:
 
@@ -38,4 +38,3 @@ Current patches:
 
 - `deterministic_dllm_compat.patch`: compatibility patch for SGLang deterministic inference with LLaDA 2.1 dLLM.
 - `dllm_trace.patch`: writes JointThreshold M2T/T2T trace events when `trace_path` is set in the DLLM YAML config.
-- `zz_confidence_remask.patch`: adds optional JointThreshold confidence-remask mode. It depends on `dllm_trace.patch`, so apply `dllm_trace.patch` first or apply all patches together.
