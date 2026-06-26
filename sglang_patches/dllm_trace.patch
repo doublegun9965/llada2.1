@@ -171,3 +171,12 @@ index a572fda..41f00c2 100644
                  any_changed_in_last_step = True
  
          if any_changed_in_last_step:
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index 6fcf81e..d5de0a5 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -436,0 +437,2 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
++    # Diffusion LLM block offsets for trace/event alignment.
++    dllm_block_offsets: Optional[List[int]] = None
+@@ -492,0 +495 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
++            dllm_block_offsets=batch.dllm_block_offsets,
