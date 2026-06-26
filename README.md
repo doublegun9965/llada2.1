@@ -305,12 +305,7 @@ trace_max_events: null
 
 `experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。也就是说，`confidence_remask_threshold`、`confidence_remask_max_count`、`max_post_edit_steps` 等本地配置会自动带进 sweep。
 
-如果这里把 `trace_path` 设为非空，GSM8K sweep 不会给主评测的全部样本写 trace；它会先正常评测，然后只把预测错误的样本用同一组阈值单独重跑一次，trace 写到本次输出目录：
-
-```text
-outputs/gsm8k/run_<timestamp>/wrong_traces/          # trace .jsonl and rendered .md
-outputs/gsm8k/run_<timestamp>/wrong_trace_details/
-```
+GSM8K sweep 默认会忽略模板里的 `trace_path`，避免普通 sweep 意外写大量 trace。需要记录主评测阶段的 dLLM token 轨迹并生成统计表时，使用 `--critical-token-analysis`，脚本会为每个阈值组合自动写本次运行专用的 `trace_path`。
 
 修改 `threshold` 或 `edit_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
 
@@ -424,6 +419,36 @@ outputs/gsm8k/run_<timestamp>/
   dllm_configs/
   server_logs/
 ```
+
+如果要把主评测 trace 转成 critical-token 分析表，先在服务器应用 trace patch，然后用 `--critical-token-analysis`。当前 trace patch 没有 request id，所以这个模式要求 `--batch-size 1`：
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --batch-size 1 \
+  --critical-token-analysis
+```
+
+每个阈值组合会额外写：
+
+```text
+outputs/gsm8k/run_<timestamp>/
+  critical_token_traces/threshold_<value>_edit_<value>.jsonl
+  critical_token_analysis/threshold_<value>_edit_<value>/
+    sample_summary.csv
+    token_summary.csv
+    token_events.csv
+    critical_token_stats.csv
+    report.md
+```
+
+开启该模式时，脚本会在本次生成的 DLLM YAML 中自动设置 `trace_max_events: null` 和 `trace_snapshot_every: 0`，避免分析 trace 被截断，同时不写大体积 block snapshot。
 
 ### Assistant Prefill 正确开头实验
 
@@ -845,14 +870,7 @@ trace_max_events: null
 
 `experiments/gsm8k_threshold_sweep.py` reads this YAML as the base template and then overrides `threshold` and `edit_threshold` for each command-line threshold pair. Local options such as `confidence_remask_threshold`, `confidence_remask_max_count`, and `max_post_edit_steps` are carried into the sweep configs.
 
-If `trace_path` is non-null in this template, the GSM8K sweep does not trace every main-evaluation sample. It first runs the normal evaluation, then reruns only wrong predictions with the same threshold pair and writes traces under the timestamped output directory:
-
-```text
-outputs/gsm8k/run_<timestamp>/wrong_traces/          # trace .jsonl and rendered .md
-outputs/gsm8k/run_<timestamp>/wrong_trace_details/
-```
-
-SGLang startup sends an internal warmup prompt such as `The capital city of France is`; the sweep script clears the trace after startup and before replaying wrong GSM8K examples, so rendered wrong-sample traces should not include that warmup request.
+The GSM8K sweep ignores `trace_path` from this template by default, so normal sweeps do not accidentally write large traces. To record main-evaluation dLLM token trajectories and generate analysis tables, pass `--critical-token-analysis`; the script writes a run-specific `trace_path` for each threshold pair.
 
 Changing `threshold` or `edit_threshold` requires restarting SGLang.
 
@@ -1164,6 +1182,36 @@ outputs/gsm8k/run_<timestamp>/
   dllm_configs/
   server_logs/
 ```
+
+To convert main-evaluation traces into critical-token analysis tables, apply the trace patch first and pass `--critical-token-analysis`. The current trace patch does not record request ids, so this mode requires `--batch-size 1`:
+
+```bash
+scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.5 \
+  --edit-thresholds 0.0 \
+  --max-tokens 512 \
+  --batch-size 1 \
+  --critical-token-analysis
+```
+
+Each threshold pair additionally writes:
+
+```text
+outputs/gsm8k/run_<timestamp>/
+  critical_token_traces/threshold_<value>_edit_<value>.jsonl
+  critical_token_analysis/threshold_<value>_edit_<value>/
+    sample_summary.csv
+    token_summary.csv
+    token_events.csv
+    critical_token_stats.csv
+    report.md
+```
+
+When this mode is enabled, the generated DLLM YAML automatically sets `trace_max_events: null` and `trace_snapshot_every: 0`, so analysis traces are not truncated and do not include large block snapshots.
 
 ## Manual SGLang Mode
 

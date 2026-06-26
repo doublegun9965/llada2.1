@@ -25,7 +25,7 @@ if str(SRC_DIR) not in sys.path:
 
 from llada_experiments import SGLangClient, load_settings
 from sglang_server.launch_sglang import build_command, load_config
-from scripts.render_sglang_dllm_trace import render_trace_to_markdown
+from scripts.analyze_dllm_critical_tokens import analyze_trace
 
 import httpx
 import yaml
@@ -132,6 +132,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sleep-seconds", type=float, default=0.0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
+    parser.add_argument(
+        "--critical-token-analysis",
+        action="store_true",
+        help=(
+            "Enable SGLang dLLM tracing during the main evaluation and write "
+            "sample_summary.csv, token_summary.csv, token_events.csv, and "
+            "critical_token_stats.csv for each threshold pair. Requires managed "
+            "server mode and --batch-size 1 because the current trace patch has no request id."
+        ),
+    )
+    parser.add_argument(
+        "--critical-token-high-confidence-threshold",
+        type=float,
+        default=0.7,
+        help="Fixed probability cutoff for high_confidence_commit in critical-token analysis.",
+    )
     return parser.parse_args()
 
 
@@ -717,164 +733,19 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "details_path",
         "dllm_config_path",
         "server_log_path",
-        "wrong_trace_num_examples",
-        "wrong_trace_path",
-        "wrong_trace_markdown_path",
-        "wrong_trace_details_path",
-        "wrong_trace_dllm_config_path",
-        "wrong_trace_server_log_path",
+        "critical_token_analysis_enabled",
+        "critical_token_trace_path",
+        "critical_token_analysis_dir",
+        "critical_token_sample_summary_path",
+        "critical_token_summary_path",
+        "critical_token_events_path",
+        "critical_token_stats_path",
+        "critical_token_report_path",
     ]
     with summary_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summaries)
-
-
-def load_wrong_examples(details_path: Path, examples: list[Example]) -> list[Example]:
-    examples_by_index = {index: example for index, example in enumerate(examples, start=1)}
-    wrong_examples: list[Example] = []
-    with details_path.open("r", encoding="utf-8-sig") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{details_path}:{line_number}: invalid JSONL") from exc
-            if record.get("correct") is True:
-                continue
-            index = int(record["index"])
-            if index not in examples_by_index:
-                raise ValueError(f"{details_path}:{line_number}: unknown example index {index}")
-            wrong_examples.append(examples_by_index[index])
-    return wrong_examples
-
-
-def trace_enabled_by_template(template: dict[str, Any]) -> bool:
-    return bool(template.get("trace_path"))
-
-
-def collect_wrong_sample_traces(
-    *,
-    pair_name: str,
-    threshold: float,
-    edit_threshold: float,
-    wrong_examples: list[Example],
-    output_dir: Path,
-    server_config: dict[str, Any],
-    dllm_template: dict[str, Any],
-    client_base_url: str,
-    settings: Any,
-    base_extra_body: dict[str, Any],
-    temperature: float,
-    max_tokens: int,
-    assistant_prefill_tokens: int,
-    tokenizer: Any | None,
-    sleep_seconds: float,
-    startup_timeout_seconds: float,
-    shutdown_timeout_seconds: float,
-    show_progress: bool,
-) -> dict[str, Any]:
-    if not wrong_examples:
-        return {
-            "wrong_trace_num_examples": 0,
-            "wrong_trace_path": None,
-            "wrong_trace_markdown_path": None,
-            "wrong_trace_details_path": None,
-            "wrong_trace_dllm_config_path": None,
-            "wrong_trace_server_log_path": None,
-        }
-
-    trace_path = output_dir / "wrong_traces" / f"{pair_name}.jsonl"
-    trace_markdown_path = output_dir / "wrong_traces" / f"{pair_name}.md"
-    trace_details_path = output_dir / "wrong_trace_details" / f"details_{pair_name}.jsonl"
-    trace_dllm_config_path = output_dir / "dllm_configs" / f"{pair_name}_wrong_trace.yaml"
-    trace_server_log_path = output_dir / "server_logs" / f"{pair_name}_wrong_trace.log"
-    if trace_path.exists():
-        trace_path.unlink()
-    if trace_markdown_path.exists():
-        trace_markdown_path.unlink()
-
-    write_dllm_algorithm_config(
-        trace_dllm_config_path,
-        template=dllm_template,
-        threshold=threshold,
-        edit_threshold=edit_threshold,
-        trace_path=trace_path,
-    )
-    assert_managed_port_available(server_config)
-    print(
-        f"Starting SGLang wrong-sample trace for threshold={threshold} "
-        f"edit_threshold={edit_threshold}"
-    )
-    print(f"Wrong trace path: {trace_path}")
-    print(f"Wrong trace DLLM config: {trace_dllm_config_path}")
-    print(f"Wrong trace server log: {trace_server_log_path}")
-    process = start_sglang_server(
-        server_config=server_config,
-        dllm_config_path=trace_dllm_config_path,
-        log_path=trace_server_log_path,
-    )
-    try:
-        wait_for_server(client_base_url, process, startup_timeout_seconds)
-        # SGLang sends an internal warmup request during startup with a fixed
-        # prompt like "The capital city of France is". It can hit the dLLM
-        # trace hook, so clear the trace after the server is ready and before
-        # replaying actual wrong GSM8K examples.
-        if trace_path.exists():
-            trace_path.unlink()
-        if trace_markdown_path.exists():
-            trace_markdown_path.unlink()
-        client = SGLangClient(
-            base_url=client_base_url,
-            api_key=settings.api_key,
-            timeout_seconds=settings.timeout_seconds,
-        )
-        evaluate_threshold_pair(
-            client=client,
-            model=settings.model,
-            examples=wrong_examples,
-            output_path=trace_details_path,
-            base_extra_body=base_extra_body,
-            threshold=threshold,
-            edit_threshold=edit_threshold,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            assistant_prefill_tokens=assistant_prefill_tokens,
-            tokenizer=tokenizer,
-            batch_size=1,
-            sleep_seconds=sleep_seconds,
-            show_progress=show_progress,
-        )
-        render_trace_to_markdown(
-            trace_path=trace_path,
-            model_path=str(server_config["model_path"]),
-            output_md=trace_markdown_path,
-            trust_remote_code=bool(server_config.get("trust_remote_code", True)),
-        )
-    except Exception as exc:
-        exit_code = process.poll()
-        status = (
-            f"SGLang exited with code {exit_code}"
-            if exit_code is not None
-            else "SGLang process is still running but disconnected"
-        )
-        raise RuntimeError(
-            f"Wrong-sample trace failed for {pair_name}: {status}. "
-            f"Check the server log: {trace_server_log_path}"
-        ) from exc
-    finally:
-        print("Stopping SGLang wrong-sample trace server")
-        stop_sglang_server(process, shutdown_timeout_seconds)
-
-    return {
-        "wrong_trace_num_examples": len(wrong_examples),
-        "wrong_trace_path": str(trace_path),
-        "wrong_trace_markdown_path": str(trace_markdown_path),
-        "wrong_trace_details_path": str(trace_details_path),
-        "wrong_trace_dllm_config_path": str(trace_dllm_config_path),
-        "wrong_trace_server_log_path": str(trace_server_log_path),
-    }
 
 
 def main() -> None:
@@ -884,6 +755,16 @@ def main() -> None:
         raise ValueError("--batch-size must be positive")
     if args.assistant_prefill_tokens < 0:
         raise ValueError("--assistant-prefill-tokens must be non-negative")
+    if args.critical_token_analysis and args.use_running_server:
+        raise ValueError(
+            "--critical-token-analysis requires managed server mode so the script can "
+            "start SGLang with a per-run trace_path."
+        )
+    if args.critical_token_analysis and args.batch_size != 1:
+        raise ValueError(
+            "--critical-token-analysis requires --batch-size 1 because the current "
+            "SGLang trace patch does not record request ids for concurrent requests."
+        )
 
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
@@ -900,12 +781,6 @@ def main() -> None:
 
     base_extra_body = load_base_extra_body(args.generation_config)
     dllm_template = load_dllm_algorithm_template(args.dllm_algorithm_config_template)
-    collect_wrong_traces = trace_enabled_by_template(dllm_template) and not args.use_running_server
-    if trace_enabled_by_template(dllm_template) and args.use_running_server:
-        print(
-            "DLLM template has trace_path set, but --use-running-server cannot restart SGLang "
-            "for wrong-only traces. Trace collection is skipped."
-        )
     output_dir = make_run_output_dir(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Writing GSM8K results to {output_dir}")
@@ -938,20 +813,34 @@ def main() -> None:
         details_path = output_dir / f"details_{pair_name}.jsonl"
         dllm_config_path = output_dir / "dllm_configs" / f"{pair_name}.yaml"
         server_log_path = output_dir / "server_logs" / f"{pair_name}.log"
+        critical_trace_path = (
+            output_dir / "critical_token_traces" / f"{pair_name}.jsonl"
+            if args.critical_token_analysis
+            else None
+        )
         process = None
 
         if not args.use_running_server:
+            pair_dllm_template = dict(dllm_template)
+            if args.critical_token_analysis:
+                pair_dllm_template["trace_max_events"] = None
+                pair_dllm_template["trace_snapshot_every"] = 0
             write_dllm_algorithm_config(
                 dllm_config_path,
-                template=dllm_template,
+                template=pair_dllm_template,
                 threshold=threshold,
                 edit_threshold=edit_threshold,
-                trace_path=None,
+                trace_path=critical_trace_path,
             )
             assert_managed_port_available(server_config)
             print(f"Starting SGLang for threshold={threshold} edit_threshold={edit_threshold}")
             print(f"DLLM config: {dllm_config_path}")
             print(f"Server log: {server_log_path}")
+            if critical_trace_path is not None:
+                critical_trace_path.parent.mkdir(parents=True, exist_ok=True)
+                if critical_trace_path.exists():
+                    critical_trace_path.unlink()
+                print(f"Critical-token trace: {critical_trace_path}")
             process = start_sglang_server(
                 server_config=server_config,
                 dllm_config_path=dllm_config_path,
@@ -959,6 +848,10 @@ def main() -> None:
             )
             try:
                 wait_for_server(client_base_url, process, args.startup_timeout_seconds)
+                # SGLang can emit an internal warmup request during startup. Clear
+                # the trace after readiness so analysis only covers GSM8K examples.
+                if critical_trace_path is not None and critical_trace_path.exists():
+                    critical_trace_path.unlink()
             except Exception as exc:
                 stop_sglang_server(process, args.shutdown_timeout_seconds)
                 raise RuntimeError(
@@ -1006,40 +899,44 @@ def main() -> None:
                 print("Stopping SGLang")
                 stop_sglang_server(process, args.shutdown_timeout_seconds)
 
-        wrong_trace_summary = {
-            "wrong_trace_num_examples": 0,
-            "wrong_trace_path": None,
-            "wrong_trace_markdown_path": None,
-            "wrong_trace_details_path": None,
-            "wrong_trace_dllm_config_path": None,
-            "wrong_trace_server_log_path": None,
+        critical_analysis_summary = {
+            "critical_token_analysis_enabled": args.critical_token_analysis,
+            "critical_token_trace_path": str(critical_trace_path) if critical_trace_path else None,
+            "critical_token_analysis_dir": None,
+            "critical_token_sample_summary_path": None,
+            "critical_token_summary_path": None,
+            "critical_token_events_path": None,
+            "critical_token_stats_path": None,
+            "critical_token_report_path": None,
         }
-        if collect_wrong_traces:
-            wrong_examples = load_wrong_examples(details_path, examples)
-            wrong_trace_summary = collect_wrong_sample_traces(
-                pair_name=pair_name,
-                threshold=threshold,
-                edit_threshold=edit_threshold,
-                wrong_examples=wrong_examples,
-                output_dir=output_dir,
-                server_config=server_config,
-                dllm_template=dllm_template,
-                client_base_url=client_base_url,
-                settings=settings,
-                base_extra_body=base_extra_body,
-                temperature=args.temperature,
-                max_tokens=args.max_tokens,
-                assistant_prefill_tokens=args.assistant_prefill_tokens,
-                tokenizer=tokenizer,
-                sleep_seconds=args.sleep_seconds,
-                startup_timeout_seconds=args.startup_timeout_seconds,
-                shutdown_timeout_seconds=args.shutdown_timeout_seconds,
-                show_progress=not args.no_progress,
+        if args.critical_token_analysis:
+            if critical_trace_path is None or not critical_trace_path.exists():
+                raise RuntimeError(
+                    f"Critical-token analysis was enabled, but no trace was written: {critical_trace_path}"
+                )
+            analysis_dir = output_dir / "critical_token_analysis" / pair_name
+            analysis_paths = analyze_trace(
+                trace_path=critical_trace_path,
+                details_path=details_path,
+                model_path=str(server_config["model_path"]),
+                output_dir=analysis_dir,
+                high_confidence_threshold=args.critical_token_high_confidence_threshold,
+                trust_remote_code=bool(server_config.get("trust_remote_code", True)),
+            )
+            critical_analysis_summary.update(
+                {
+                    "critical_token_analysis_dir": str(analysis_paths.output_dir),
+                    "critical_token_sample_summary_path": str(analysis_paths.sample_summary_path),
+                    "critical_token_summary_path": str(analysis_paths.token_summary_path),
+                    "critical_token_events_path": str(analysis_paths.token_events_path),
+                    "critical_token_stats_path": str(analysis_paths.critical_token_stats_path),
+                    "critical_token_report_path": str(analysis_paths.report_path),
+                }
             )
 
         summary["dllm_config_path"] = str(dllm_config_path) if not args.use_running_server else None
         summary["server_log_path"] = str(server_log_path) if not args.use_running_server else None
-        summary.update(wrong_trace_summary)
+        summary.update(critical_analysis_summary)
         summaries.append(summary)
         write_summary(output_dir, summaries)
         progress_write(

@@ -1,0 +1,826 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from statistics import mean
+from typing import Any
+
+
+NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+MATH_WORDS = {
+    "add",
+    "added",
+    "altogether",
+    "average",
+    "difference",
+    "divide",
+    "divided",
+    "each",
+    "equal",
+    "equals",
+    "fewer",
+    "left",
+    "less",
+    "minus",
+    "more",
+    "multiply",
+    "product",
+    "remain",
+    "remaining",
+    "subtract",
+    "sum",
+    "than",
+    "therefore",
+    "times",
+    "total",
+}
+UNIT_WORDS = {
+    "$",
+    "cent",
+    "cents",
+    "dollar",
+    "dollars",
+    "hour",
+    "hours",
+    "minute",
+    "minutes",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "mile",
+    "miles",
+    "apple",
+    "apples",
+    "book",
+    "books",
+    "ticket",
+    "tickets",
+}
+OPERATORS = {"+", "-", "*", "/", "=", "<", ">", "×", "÷"}
+CRITICAL_TYPES = {
+    "answer_marker",
+    "answer_number",
+    "number",
+    "operator",
+    "unit",
+    "math_word",
+}
+
+
+@dataclass(frozen=True)
+class AnalysisPaths:
+    output_dir: Path
+    token_events_path: Path
+    token_summary_path: Path
+    sample_summary_path: Path
+    critical_token_stats_path: Path
+    report_path: Path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Convert SGLang dLLM trace JSONL into critical-token analysis tables."
+    )
+    parser.add_argument("trace_path", help="Trace JSONL written by SGLang dLLM trace patch.")
+    parser.add_argument(
+        "--details",
+        required=True,
+        help="GSM8K details JSONL from the same sequential evaluation run.",
+    )
+    parser.add_argument(
+        "--model-path",
+        required=True,
+        help="Model/tokenizer path used to decode trace token ids.",
+    )
+    parser.add_argument("--output-dir", default="outputs/critical_path_analysis")
+    parser.add_argument(
+        "--no-timestamp",
+        action="store_true",
+        help="Write directly into --output-dir instead of creating run_<timestamp>.",
+    )
+    parser.add_argument(
+        "--high-confidence-threshold",
+        type=float,
+        default=0.7,
+        help="Fixed threshold for high_confidence_commit. Default: 0.7.",
+    )
+    parser.add_argument(
+        "--early-fraction",
+        type=float,
+        default=0.3,
+        help="Block-fraction cutoff for early_commit_within_block. Default: 0.3.",
+    )
+    parser.add_argument(
+        "--late-fraction",
+        type=float,
+        default=0.7,
+        help="Block-fraction cutoff for late_commit_within_block. Default: 0.7.",
+    )
+    parser.add_argument("--trust-remote-code", action="store_true")
+    return parser.parse_args()
+
+
+def timestamped_output_dir(base_dir: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = base_dir / f"run_{timestamp}"
+    counter = 1
+    while run_dir.exists():
+        run_dir = base_dir / f"run_{timestamp}_{counter:02d}"
+        counter += 1
+    return run_dir
+
+
+def make_paths(output_dir: Path) -> AnalysisPaths:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return AnalysisPaths(
+        output_dir=output_dir,
+        token_events_path=output_dir / "token_events.csv",
+        token_summary_path=output_dir / "token_summary.csv",
+        sample_summary_path=output_dir / "sample_summary.csv",
+        critical_token_stats_path=output_dir / "critical_token_stats.csv",
+        report_path=output_dir / "report.md",
+    )
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with path.open("r", encoding="utf-8-sig") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{line_number}: invalid JSONL") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"{path}:{line_number}: expected a JSON object")
+            records.append(record)
+    return records
+
+
+def split_trace_into_block_segments(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    segments: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    previous_iteration: int | None = None
+    for event in events:
+        iteration = int(event.get("global_iteration", 0))
+        if current and previous_iteration is not None and iteration <= previous_iteration:
+            segments.append(current)
+            current = []
+        current.append(event)
+        previous_iteration = iteration
+    if current:
+        segments.append(current)
+    return segments
+
+
+def decode_token(tokenizer: Any, token_id: int | None) -> str:
+    if token_id is None:
+        return ""
+    return tokenizer.decode([int(token_id)], skip_special_tokens=False)
+
+
+def normalize_token_text(token: str) -> str:
+    return token.replace("Ġ", " ").replace("▁", " ").strip()
+
+
+def classify_token(token: str, token_id: int | None, special_ids: set[int]) -> str:
+    normalized = normalize_token_text(token)
+    lowered = normalized.lower()
+    if token_id is not None and int(token_id) in special_ids:
+        return "special"
+    if "####" in normalized:
+        return "answer_marker"
+    if NUMBER_RE.search(normalized):
+        return "number"
+    if normalized in OPERATORS:
+        return "operator"
+    if any(operator in normalized for operator in OPERATORS) and len(normalized) <= 3:
+        return "operator"
+    if lowered in UNIT_WORDS:
+        return "unit"
+    if lowered in MATH_WORDS:
+        return "math_word"
+    if normalized and all(not char.isalnum() for char in normalized):
+        return "punctuation"
+    if not normalized:
+        return "special"
+    return "plain_text"
+
+
+def is_critical_type(token_type: str) -> bool:
+    return token_type in CRITICAL_TYPES
+
+
+def as_bool_text(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return ""
+
+
+def csv_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return as_bool_text(value)
+    if value is None:
+        return ""
+    return value
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: csv_value(row.get(field)) for field in fieldnames})
+
+
+def block_count_for_detail(record: dict[str, Any], block_size: int) -> int:
+    completion_tokens = record.get("completion_tokens")
+    if isinstance(completion_tokens, int) and completion_tokens > 0:
+        return max(1, math.ceil(completion_tokens / block_size))
+    return 1
+
+
+def passes_threshold(event_type: str, prob: float | None, threshold: float, edit_threshold: float) -> bool | None:
+    if prob is None:
+        return None
+    if event_type == "edit":
+        return prob >= edit_threshold
+    if event_type == "mask_fill":
+        return prob >= threshold
+    return None
+
+
+def update_answer_span_types(token_rows: list[dict[str, Any]]) -> None:
+    rows_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in token_rows:
+        rows_by_sample[str(row["sample_id"])].append(row)
+
+    for rows in rows_by_sample.values():
+        rows.sort(key=lambda item: int(item["generated_pos"]))
+        marker_positions = [
+            int(row["generated_pos"])
+            for row in rows
+            if row.get("token_type") == "answer_marker" or "####" in str(row.get("final_token", ""))
+        ]
+        if not marker_positions:
+            continue
+        marker_pos = marker_positions[-1]
+        answer_window = set(range(marker_pos, marker_pos + 6))
+        for row in rows:
+            generated_pos = int(row["generated_pos"])
+            row["final_answer_span"] = generated_pos in answer_window
+            if generated_pos in answer_window and row.get("token_type") == "number":
+                row["token_type"] = "answer_number"
+                row["is_critical"] = True
+
+
+def analyze_trace(
+    *,
+    trace_path: Path,
+    details_path: Path,
+    model_path: str,
+    output_dir: Path,
+    high_confidence_threshold: float = 0.7,
+    early_fraction: float = 0.3,
+    late_fraction: float = 0.7,
+    trust_remote_code: bool = False,
+) -> AnalysisPaths:
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    special_ids = set(int(token_id) for token_id in getattr(tokenizer, "all_special_ids", []) or [])
+    mask_token_id = getattr(tokenizer, "mask_token_id", None)
+    if mask_token_id is not None:
+        special_ids.add(int(mask_token_id))
+
+    trace_events = read_jsonl(trace_path)
+    details = sorted(read_jsonl(details_path), key=lambda item: int(item.get("index", 0)))
+    paths = make_paths(output_dir)
+
+    if not trace_events:
+        write_empty_outputs(paths)
+        return paths
+
+    block_size = int(trace_events[0].get("block_size", 0) or 0)
+    if block_size <= 0:
+        raise ValueError(f"{trace_path}: first trace event is missing a positive block_size")
+
+    segments = split_trace_into_block_segments(trace_events)
+    segment_index = 0
+    token_events: list[dict[str, Any]] = []
+    token_event_counts: dict[tuple[str, int], int] = defaultdict(int)
+    sample_block_totals: dict[tuple[str, int], int] = {}
+    sample_global_totals: dict[str, int] = defaultdict(int)
+    warnings: list[str] = []
+
+    for detail in details:
+        sample_id = str(detail.get("id", detail.get("index")))
+        sample_index = int(detail.get("index", len(sample_global_totals) + 1))
+        threshold = float(detail.get("threshold", 0.0))
+        edit_threshold = float(detail.get("edit_threshold", 0.0))
+        blocks_needed = block_count_for_detail(detail, block_size)
+        cumulative_iteration_offset = 0
+
+        for block_index in range(blocks_needed):
+            if segment_index >= len(segments):
+                warnings.append(
+                    f"Missing trace block for sample_id={sample_id} block_index={block_index}; "
+                    "remaining details cannot be fully aligned."
+                )
+                break
+            segment = segments[segment_index]
+            segment_index += 1
+            total_block_iterations = max(int(event.get("global_iteration", 0)) for event in segment)
+            sample_block_totals[(sample_id, block_index)] = total_block_iterations
+            sample_global_totals[sample_id] += total_block_iterations
+
+            for trace_event in segment:
+                block_iteration = int(trace_event.get("global_iteration", 0))
+                global_iteration = cumulative_iteration_offset + block_iteration
+                for event_type, list_name in (
+                    ("mask_fill", "mask_fills"),
+                    ("edit", "edits"),
+                    ("remask", "remasks"),
+                ):
+                    for item in trace_event.get(list_name) or []:
+                        block_offset = int(item["block_offset"])
+                        generated_pos = block_index * block_size + block_offset
+                        old_token_id = int(item["old_token_id"])
+                        new_token_id = int(item["new_token_id"])
+                        old_token = decode_token(tokenizer, old_token_id)
+                        new_token = decode_token(tokenizer, new_token_id)
+                        token_type = classify_token(new_token, new_token_id, special_ids)
+                        event_key = (sample_id, generated_pos)
+                        event_index = token_event_counts[event_key]
+                        token_event_counts[event_key] += 1
+                        prob = float(item["prob"]) if item.get("prob") is not None else None
+                        token_events.append(
+                            {
+                                "event_id": f"{sample_id}:{generated_pos}:{event_index}",
+                                "token_id": f"{sample_id}:{generated_pos}",
+                                "sample_id": sample_id,
+                                "sample_index": sample_index,
+                                "generated_pos": generated_pos,
+                                "event_index": event_index,
+                                "global_iteration": global_iteration,
+                                "block_index": block_index,
+                                "block_iteration": block_iteration,
+                                "block_offset": block_offset,
+                                "event_type": event_type,
+                                "old_token": old_token,
+                                "old_token_id": old_token_id,
+                                "new_token": new_token,
+                                "new_token_id": new_token_id,
+                                "prob": prob,
+                                "token_type": token_type,
+                                "is_critical": is_critical_type(token_type),
+                                "is_commit_event": False,
+                                "changed_token": old_token_id != new_token_id,
+                                "passes_run_threshold": passes_threshold(
+                                    event_type, prob, threshold, edit_threshold
+                                ),
+                            }
+                        )
+            cumulative_iteration_offset += total_block_iterations
+
+    if segment_index < len(segments):
+        warnings.append(
+            f"{len(segments) - segment_index} unassigned trace block segment(s). "
+            "This usually means completion_tokens undercounted generated blocks."
+        )
+
+    token_summary = build_token_summary(
+        token_events=token_events,
+        sample_block_totals=sample_block_totals,
+        high_confidence_threshold=high_confidence_threshold,
+        early_fraction=early_fraction,
+        late_fraction=late_fraction,
+    )
+    update_answer_span_types(token_summary)
+    propagate_final_token_types(token_events, token_summary)
+    sample_summary = build_sample_summary(details, token_summary, token_events, sample_global_totals)
+    critical_stats = build_critical_token_stats(token_summary, details)
+
+    write_csv(paths.token_events_path, token_events, TOKEN_EVENTS_FIELDS)
+    write_csv(paths.token_summary_path, token_summary, TOKEN_SUMMARY_FIELDS)
+    write_csv(paths.sample_summary_path, sample_summary, SAMPLE_SUMMARY_FIELDS)
+    write_csv(paths.critical_token_stats_path, critical_stats, CRITICAL_STATS_FIELDS)
+    write_report(
+        paths=paths,
+        trace_path=trace_path,
+        details_path=details_path,
+        model_path=model_path,
+        warnings=warnings,
+        sample_summary=sample_summary,
+        token_summary=token_summary,
+        critical_stats=critical_stats,
+    )
+    return paths
+
+
+def build_token_summary(
+    *,
+    token_events: list[dict[str, Any]],
+    sample_block_totals: dict[tuple[str, int], int],
+    high_confidence_threshold: float,
+    early_fraction: float,
+    late_fraction: float,
+) -> list[dict[str, Any]]:
+    events_by_token: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in token_events:
+        events_by_token[str(event["token_id"])].append(event)
+
+    rows: list[dict[str, Any]] = []
+    for token_id, events in events_by_token.items():
+        events.sort(key=lambda item: int(item["event_index"]))
+        sample_id = str(events[0]["sample_id"])
+        generated_pos = int(events[0]["generated_pos"])
+        block_index = int(events[0]["block_index"])
+        block_offset = int(events[0]["block_offset"])
+        commit_event = next((event for event in events if event["event_type"] == "mask_fill"), events[0])
+        final_event = events[-1]
+        edit_events = [event for event in events if event["event_type"] == "edit"]
+        remask_events = [event for event in events if event["event_type"] == "remask"]
+        total_block_iterations = sample_block_totals.get((sample_id, block_index))
+        commit_block_iteration = int(commit_event["block_iteration"])
+        commit_block_fraction = (
+            commit_block_iteration / total_block_iterations
+            if total_block_iterations
+            else None
+        )
+        commit_prob = commit_event.get("prob")
+        rows.append(
+            {
+                "token_id": token_id,
+                "sample_id": sample_id,
+                "sample_index": events[0]["sample_index"],
+                "generated_pos": generated_pos,
+                "block_index": block_index,
+                "block_offset": block_offset,
+                "final_token": final_event["new_token"],
+                "final_token_id": final_event["new_token_id"],
+                "token_type": classify_token(
+                    str(final_event["new_token"]),
+                    int(final_event["new_token_id"]),
+                    set(),
+                ),
+                "is_critical": is_critical_type(
+                    classify_token(str(final_event["new_token"]), int(final_event["new_token_id"]), set())
+                ),
+                "commit_global_iteration": commit_event["global_iteration"],
+                "commit_block_iteration": commit_block_iteration,
+                "commit_prob": commit_prob,
+                "commit_event_type": commit_event["event_type"],
+                "last_event_global_iteration": final_event["global_iteration"],
+                "last_event_block_iteration": final_event["block_iteration"],
+                "last_edit_global_iteration": edit_events[-1]["global_iteration"] if edit_events else None,
+                "last_edit_block_iteration": edit_events[-1]["block_iteration"] if edit_events else None,
+                "num_events": len(events),
+                "num_edits": len(edit_events),
+                "num_remasks": len(remask_events),
+                "was_edited_after_commit": bool(edit_events),
+                "was_remasked": bool(remask_events),
+                "total_block_iterations": total_block_iterations,
+                "commit_block_fraction": commit_block_fraction,
+                "early_commit_within_block": (
+                    commit_block_fraction is not None and commit_block_fraction <= early_fraction
+                ),
+                "late_commit_within_block": (
+                    commit_block_fraction is not None and commit_block_fraction >= late_fraction
+                ),
+                "high_confidence_commit": (
+                    commit_prob is not None and float(commit_prob) >= high_confidence_threshold
+                ),
+                "final_answer_span": False,
+                "passes_run_threshold": commit_event.get("passes_run_threshold"),
+            }
+        )
+
+        commit_event["is_commit_event"] = True
+
+    rows.sort(key=lambda item: (int(item["sample_index"]), int(item["generated_pos"])))
+    return rows
+
+
+def propagate_final_token_types(
+    token_events: list[dict[str, Any]], token_summary: list[dict[str, Any]]
+) -> None:
+    type_by_token_id = {
+        str(row["token_id"]): (row["token_type"], row["is_critical"])
+        for row in token_summary
+    }
+    for event in token_events:
+        final_type, is_critical = type_by_token_id.get(
+            str(event["token_id"]), (event["token_type"], event["is_critical"])
+        )
+        event["token_type"] = final_type
+        event["is_critical"] = is_critical
+
+
+def build_sample_summary(
+    details: list[dict[str, Any]],
+    token_summary: list[dict[str, Any]],
+    token_events: list[dict[str, Any]],
+    sample_global_totals: dict[str, int],
+) -> list[dict[str, Any]]:
+    tokens_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    events_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in token_summary:
+        tokens_by_sample[str(row["sample_id"])].append(row)
+    for event in token_events:
+        events_by_sample[str(event["sample_id"])].append(event)
+
+    rows: list[dict[str, Any]] = []
+    for detail in sorted(details, key=lambda item: int(item.get("index", 0))):
+        sample_id = str(detail.get("id", detail.get("index")))
+        tokens = tokens_by_sample.get(sample_id, [])
+        events = events_by_sample.get(sample_id, [])
+        critical_tokens = [token for token in tokens if token.get("is_critical") is True]
+        plain_tokens = [token for token in tokens if token.get("token_type") == "plain_text"]
+        critical_early = [token for token in critical_tokens if token.get("early_commit_within_block") is True]
+        critical_high_conf = [
+            token for token in critical_tokens if token.get("high_confidence_commit") is True
+        ]
+        critical_edits = sum(int(token.get("num_edits") or 0) for token in critical_tokens)
+        plain_edits = sum(int(token.get("num_edits") or 0) for token in plain_tokens)
+        num_blocks = len({int(token["block_index"]) for token in tokens})
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "sample_index": detail.get("index"),
+                "question": detail.get("question"),
+                "gold_answer": detail.get("gold_answer"),
+                "predicted_answer": detail.get("predicted_answer"),
+                "correct": detail.get("correct"),
+                "threshold": detail.get("threshold"),
+                "edit_threshold": detail.get("edit_threshold"),
+                "num_blocks": num_blocks,
+                "total_global_iterations": sample_global_totals.get(sample_id),
+                "num_token_events": len(events),
+                "num_tokens": len(tokens),
+                "num_critical_tokens": len(critical_tokens),
+                "num_critical_early_commits": len(critical_early),
+                "critical_early_commit_rate": (
+                    len(critical_early) / len(critical_tokens) if critical_tokens else None
+                ),
+                "num_high_confidence_critical_commits": len(critical_high_conf),
+                "high_confidence_critical_commit_rate": (
+                    len(critical_high_conf) / len(critical_tokens) if critical_tokens else None
+                ),
+                "num_critical_edits": critical_edits,
+                "num_plain_edits": plain_edits,
+            }
+        )
+    return rows
+
+
+def build_critical_token_stats(
+    token_summary: list[dict[str, Any]], details: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    correct_by_sample = {
+        str(detail.get("id", detail.get("index"))): detail.get("correct")
+        for detail in details
+    }
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in token_summary:
+        correct = correct_by_sample.get(str(row["sample_id"]))
+        correct_label = "correct" if correct is True else "wrong" if correct is False else "unknown"
+        groups[(correct_label, str(row["token_type"]))].append(row)
+
+    stats: list[dict[str, Any]] = []
+    for (correct_label, token_type), rows in sorted(groups.items()):
+        critical_rows = [row for row in rows if row.get("is_critical") is True]
+        commit_fractions = [
+            float(row["commit_block_fraction"])
+            for row in rows
+            if row.get("commit_block_fraction") not in (None, "")
+        ]
+        commit_probs = [
+            float(row["commit_prob"])
+            for row in rows
+            if row.get("commit_prob") not in (None, "")
+        ]
+        stats.append(
+            {
+                "correct_group": correct_label,
+                "token_type": token_type,
+                "num_tokens": len(rows),
+                "num_critical_tokens": len(critical_rows),
+                "early_commit_rate": ratio(rows, "early_commit_within_block"),
+                "high_confidence_commit_rate": ratio(rows, "high_confidence_commit"),
+                "avg_commit_block_fraction": mean(commit_fractions) if commit_fractions else None,
+                "avg_commit_prob": mean(commit_probs) if commit_probs else None,
+                "avg_num_edits": mean([int(row.get("num_edits") or 0) for row in rows]) if rows else None,
+            }
+        )
+    return stats
+
+
+def ratio(rows: list[dict[str, Any]], key: str) -> float | None:
+    if not rows:
+        return None
+    return sum(1 for row in rows if row.get(key) is True) / len(rows)
+
+
+def write_report(
+    *,
+    paths: AnalysisPaths,
+    trace_path: Path,
+    details_path: Path,
+    model_path: str,
+    warnings: list[str],
+    sample_summary: list[dict[str, Any]],
+    token_summary: list[dict[str, Any]],
+    critical_stats: list[dict[str, Any]],
+) -> None:
+    correct_samples = sum(1 for row in sample_summary if row.get("correct") is True)
+    total_samples = len(sample_summary)
+    critical_tokens = [row for row in token_summary if row.get("is_critical") is True]
+    lines = [
+        "# dLLM Critical Token Analysis",
+        "",
+        f"- Trace path: `{trace_path}`",
+        f"- Details path: `{details_path}`",
+        f"- Model path: `{model_path}`",
+        f"- Samples: `{total_samples}`",
+        f"- Correct samples: `{correct_samples}`",
+        f"- Token slots: `{len(token_summary)}`",
+        f"- Critical token slots: `{len(critical_tokens)}`",
+        "",
+        "## Outputs",
+        "",
+        f"- `sample_summary.csv`: `{paths.sample_summary_path}`",
+        f"- `token_summary.csv`: `{paths.token_summary_path}`",
+        f"- `token_events.csv`: `{paths.token_events_path}`",
+        f"- `critical_token_stats.csv`: `{paths.critical_token_stats_path}`",
+        "",
+    ]
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Critical Token Stats",
+            "",
+            "| Correct Group | Token Type | Tokens | Early Commit Rate | High Confidence Rate | Avg Commit Fraction | Avg Edits |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in critical_stats:
+        lines.append(
+            "| "
+            f"{row['correct_group']} | "
+            f"{row['token_type']} | "
+            f"{row['num_tokens']} | "
+            f"{format_float(row.get('early_commit_rate'))} | "
+            f"{format_float(row.get('high_confidence_commit_rate'))} | "
+            f"{format_float(row.get('avg_commit_block_fraction'))} | "
+            f"{format_float(row.get('avg_num_edits'))} |"
+        )
+    lines.append("")
+    paths.report_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def format_float(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return f"{float(value):.4f}"
+
+
+def write_empty_outputs(paths: AnalysisPaths) -> None:
+    write_csv(paths.token_events_path, [], TOKEN_EVENTS_FIELDS)
+    write_csv(paths.token_summary_path, [], TOKEN_SUMMARY_FIELDS)
+    write_csv(paths.sample_summary_path, [], SAMPLE_SUMMARY_FIELDS)
+    write_csv(paths.critical_token_stats_path, [], CRITICAL_STATS_FIELDS)
+    paths.report_path.write_text("# dLLM Critical Token Analysis\n\nNo trace events found.\n", encoding="utf-8")
+
+
+SAMPLE_SUMMARY_FIELDS = [
+    "sample_id",
+    "sample_index",
+    "question",
+    "gold_answer",
+    "predicted_answer",
+    "correct",
+    "threshold",
+    "edit_threshold",
+    "num_blocks",
+    "total_global_iterations",
+    "num_token_events",
+    "num_tokens",
+    "num_critical_tokens",
+    "num_critical_early_commits",
+    "critical_early_commit_rate",
+    "num_high_confidence_critical_commits",
+    "high_confidence_critical_commit_rate",
+    "num_critical_edits",
+    "num_plain_edits",
+]
+
+TOKEN_SUMMARY_FIELDS = [
+    "token_id",
+    "sample_id",
+    "sample_index",
+    "generated_pos",
+    "block_index",
+    "block_offset",
+    "final_token",
+    "final_token_id",
+    "token_type",
+    "is_critical",
+    "commit_global_iteration",
+    "commit_block_iteration",
+    "commit_prob",
+    "commit_event_type",
+    "last_event_global_iteration",
+    "last_event_block_iteration",
+    "last_edit_global_iteration",
+    "last_edit_block_iteration",
+    "num_events",
+    "num_edits",
+    "num_remasks",
+    "was_edited_after_commit",
+    "was_remasked",
+    "total_block_iterations",
+    "commit_block_fraction",
+    "early_commit_within_block",
+    "late_commit_within_block",
+    "high_confidence_commit",
+    "final_answer_span",
+    "passes_run_threshold",
+]
+
+TOKEN_EVENTS_FIELDS = [
+    "event_id",
+    "token_id",
+    "sample_id",
+    "sample_index",
+    "generated_pos",
+    "event_index",
+    "global_iteration",
+    "block_index",
+    "block_iteration",
+    "block_offset",
+    "event_type",
+    "old_token",
+    "old_token_id",
+    "new_token",
+    "new_token_id",
+    "prob",
+    "token_type",
+    "is_critical",
+    "is_commit_event",
+    "changed_token",
+    "passes_run_threshold",
+]
+
+CRITICAL_STATS_FIELDS = [
+    "correct_group",
+    "token_type",
+    "num_tokens",
+    "num_critical_tokens",
+    "early_commit_rate",
+    "high_confidence_commit_rate",
+    "avg_commit_block_fraction",
+    "avg_commit_prob",
+    "avg_num_edits",
+]
+
+
+def main() -> None:
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    if not args.no_timestamp:
+        output_dir = timestamped_output_dir(output_dir)
+    paths = analyze_trace(
+        trace_path=Path(args.trace_path),
+        details_path=Path(args.details),
+        model_path=args.model_path,
+        output_dir=output_dir,
+        high_confidence_threshold=args.high_confidence_threshold,
+        early_fraction=args.early_fraction,
+        late_fraction=args.late_fraction,
+        trust_remote_code=args.trust_remote_code,
+    )
+    print(f"Wrote critical-token analysis to {paths.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
