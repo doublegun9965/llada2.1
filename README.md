@@ -276,7 +276,7 @@ vim sglang_server/server_env.local
 export SGLANG_DISABLE_VLLM_RMSNORM=1
 ```
 
-自动 GSM8K sweep 和手动 `bash sglang_server/start_sglang.sh` 都会在启动 SGLang 前加载 `sglang_server/server_env.local`。
+自动 GSM8K sweep 和手动 `bash sglang_server/start_sglang.sh` 都会在启动 SGLang 前加载 `sglang_server/server_env.local`。这个变量需要配合 `sglang_patches/rocm_disable_vllm_rmsnorm.patch`，服务器上重新应用所有 SGLang patches 后才会生效。
 
 ### LLaDA 2.1 阈值配置
 
@@ -665,7 +665,7 @@ python experiments/smoke_test.py --prompt "say hello"
 - `--max-tokens` 太大。
 - 端口上连到的是旧的 SGLang 进程。
 - 模型路径或 DLLM 配置不兼容。
-- 缺少 `SGLANG_DISABLE_VLLM_RMSNORM=1`。
+- 缺少 `SGLANG_DISABLE_VLLM_RMSNORM=1`，或服务器上的 SGLang 没有应用 `rocm_disable_vllm_rmsnorm.patch`。
 
 先看本次运行目录里的日志：
 
@@ -679,10 +679,11 @@ tail -n 200 outputs/gsm8k/run_<timestamp>/server_logs/<log-file>.log
 TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given
 ```
 
-检查：
+检查 env 和 patch：
 
 ```bash
 cat sglang_server/server_env.local
+ls sglang_patches/rocm_disable_vllm_rmsnorm.patch
 ```
 
 应该包含：
@@ -819,7 +820,7 @@ Current recommended content for the ROCm/SGLang RMSNorm issue:
 export SGLANG_DISABLE_VLLM_RMSNORM=1
 ```
 
-Both automatic GSM8K sweep and manual `bash sglang_server/start_sglang.sh` load `sglang_server/server_env.local` before starting SGLang.
+Both automatic GSM8K sweep and manual `bash sglang_server/start_sglang.sh` load `sglang_server/server_env.local` before starting SGLang. This variable requires `sglang_patches/rocm_disable_vllm_rmsnorm.patch`; reapply all SGLang patches on the server after pulling.
 
 ### LLaDA 2.1 Threshold Config
 
@@ -1246,7 +1247,7 @@ This usually means SGLang accepted the connection but closed it before returning
 - The output length is too large for the current memory settings.
 - The port is connected to an old/stale SGLang process.
 - The model path or DLLM config is incompatible with the server.
-- `SGLANG_DISABLE_VLLM_RMSNORM=1` is missing, which can trigger `TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given` on this server setup.
+- `SGLANG_DISABLE_VLLM_RMSNORM=1` is missing, or the server-side SGLang checkout has not applied `rocm_disable_vllm_rmsnorm.patch`, which can trigger `TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given` on this server setup.
 
 Check the log printed by the sweep script, for example:
 
@@ -1268,10 +1269,11 @@ If the log contains:
 TypeError: fused_add_rms_norm() takes 4 positional arguments but 6 were given
 ```
 
-create or check:
+create/check the env file and make sure the patch exists:
 
 ```bash
 cat sglang_server/server_env.local
+ls sglang_patches/rocm_disable_vllm_rmsnorm.patch
 ```
 
 It should include:

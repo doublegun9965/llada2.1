@@ -1,0 +1,21 @@
+diff --git a/python/sglang/srt/layers/layernorm.py b/python/sglang/srt/layers/layernorm.py
+index e9c9e7b..3efcc87 100644
+--- a/python/sglang/srt/layers/layernorm.py
++++ b/python/sglang/srt/layers/layernorm.py
+@@ -45,6 +45,7 @@ _is_hip = is_hip()
+ _is_musa = is_musa()
+ _is_npu = is_npu()
+ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
++_disable_vllm_rms_norm = get_bool_env_var("SGLANG_DISABLE_VLLM_RMSNORM")
+ _is_cpu_amx_available = cpu_has_amx_support()
+ _is_cpu = is_cpu()
+ _is_xpu = is_xpu()
+@@ -76,7 +77,7 @@ if _use_aiter:
+ 
+     _has_aiter_layer_norm = True  # aiter provides the layer_norm functions
+     _has_vllm_rms_norm = True  # aiter provides the rms_norm functions
+-elif _is_hip:
++elif _is_hip and not _disable_vllm_rms_norm:
+     try:
+         from vllm._custom_ops import fused_add_rms_norm, rms_norm
+ 
