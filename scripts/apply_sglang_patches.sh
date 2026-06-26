@@ -40,9 +40,6 @@ done
 for patch in "${patches[@]}"; do
   echo "Checking $patch"
   git -C "$sglang_src" apply --check "$patch"
-done
-
-for patch in "${patches[@]}"; do
   echo "Applying $patch"
   git -C "$sglang_src" apply "$patch"
 done
