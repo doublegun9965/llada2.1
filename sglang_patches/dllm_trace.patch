@@ -105,7 +105,7 @@ index a572fda..41f00c2 100644
                  else:
                      post_edit_steps[i] += 1
                      if post_edit_steps[i] > self.max_post_edit_steps:
-@@ -121,7 +181,50 @@ class JointThreshold(DllmAlgorithm):
+@@ -121,7 +181,65 @@ class JointThreshold(DllmAlgorithm):
                      finished[i] = True
                      continue
  
@@ -134,8 +134,23 @@ index a572fda..41f00c2 100644
                  curr_input_ids[transfer_index] = x[transfer_index]
 +                active_mask_count_after = int((curr_input_ids == self.mask_id).sum().item())
 +                if self._trace_enabled():
++                    request_ids = getattr(forward_batch, "rids", None)
++                    request_id = (
++                        request_ids[i]
++                        if request_ids is not None and i < len(request_ids)
++                        else None
++                    )
++                    dllm_block_offsets = getattr(forward_batch, "dllm_block_offsets", None)
++                    dllm_block_offset = (
++                        int(dllm_block_offsets[i])
++                        if dllm_block_offsets is not None and i < len(dllm_block_offsets)
++                        else i * self.block_size
++                    )
 +                    event = {
 +                        "run_id": self._trace_run_id,
++                        "request_id": request_id,
++                        "dllm_block_offset": dllm_block_offset,
++                        "dllm_block_index": dllm_block_offset // self.block_size,
 +                        "global_iteration": global_iteration,
 +                        "batch_index": i,
 +                        "batch_size": batch_size,

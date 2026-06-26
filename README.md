@@ -420,7 +420,7 @@ outputs/gsm8k/run_<timestamp>/
   server_logs/
 ```
 
-如果要把主评测 trace 转成 critical-token 分析表，先在服务器应用 trace patch，然后用 `--critical-token-analysis`。当前 trace patch 没有 request id，所以这个模式要求 `--batch-size 1`：
+如果要把主评测 trace 转成 critical-token 分析表，先在服务器应用 trace patch，然后用 `--critical-token-analysis`。新版 trace patch 会记录 `request_id` 和 `dllm_block_offset`，分析脚本会优先用这些字段做精确样本/block 对齐：
 
 ```bash
 scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
@@ -449,6 +449,8 @@ outputs/gsm8k/run_<timestamp>/
 ```
 
 开启该模式时，脚本会在本次生成的 DLLM YAML 中自动设置 `trace_max_events: null` 和 `trace_snapshot_every: 0`，避免分析 trace 被截断，同时不写大体积 block snapshot。
+
+如果 report 里仍然出现 `unassigned trace block segment(s)`，说明分析的是旧 trace，或者服务器上的 `dllm_trace.patch` 还没有重新应用。旧 trace 没有 `request_id/dllm_block_offset`，分析脚本只能从 `completion_tokens` 估计 block 归属，无法完全修复；请重新应用 patch 后重跑 sweep。
 
 ### Assistant Prefill 正确开头实验
 
@@ -1183,7 +1185,7 @@ outputs/gsm8k/run_<timestamp>/
   server_logs/
 ```
 
-To convert main-evaluation traces into critical-token analysis tables, apply the trace patch first and pass `--critical-token-analysis`. The current trace patch does not record request ids, so this mode requires `--batch-size 1`:
+To convert main-evaluation traces into critical-token analysis tables, apply the trace patch first and pass `--critical-token-analysis`. The updated trace patch records `request_id` and `dllm_block_offset`, and the analyzer uses those fields for exact sample/block alignment:
 
 ```bash
 scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
@@ -1212,6 +1214,8 @@ outputs/gsm8k/run_<timestamp>/
 ```
 
 When this mode is enabled, the generated DLLM YAML automatically sets `trace_max_events: null` and `trace_snapshot_every: 0`, so analysis traces are not truncated and do not include large block snapshots.
+
+If the report still shows `unassigned trace block segment(s)`, the input is an old trace or the server-side `dllm_trace.patch` was not reapplied. Old traces do not contain `request_id/dllm_block_offset`, so the analyzer can only estimate block ownership from `completion_tokens`; rerun the sweep after applying the updated patch.
 
 ## Manual SGLang Mode
 

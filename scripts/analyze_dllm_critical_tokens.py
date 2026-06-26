@@ -254,6 +254,13 @@ def block_count_for_detail(record: dict[str, Any], block_size: int) -> int:
     return 1
 
 
+def has_request_aligned_trace(events: list[dict[str, Any]]) -> bool:
+    return any(
+        event.get("request_id") is not None and event.get("dllm_block_offset") is not None
+        for event in events
+    )
+
+
 def passes_threshold(event_type: str, prob: float | None, threshold: float, edit_threshold: float) -> bool | None:
     if prob is None:
         return None
@@ -262,6 +269,62 @@ def passes_threshold(event_type: str, prob: float | None, threshold: float, edit
     if event_type == "mask_fill":
         return prob >= threshold
     return None
+
+
+def append_token_event(
+    *,
+    token_events: list[dict[str, Any]],
+    token_event_counts: dict[tuple[str, int], int],
+    tokenizer: Any,
+    special_ids: set[int],
+    sample_id: str,
+    sample_index: int,
+    generated_pos: int,
+    global_iteration: int,
+    block_index: int,
+    block_iteration: int,
+    block_offset: int,
+    event_type: str,
+    item: dict[str, Any],
+    threshold: float,
+    edit_threshold: float,
+) -> None:
+    old_token_id = int(item["old_token_id"])
+    new_token_id = int(item["new_token_id"])
+    old_token = decode_token(tokenizer, old_token_id)
+    new_token = decode_token(tokenizer, new_token_id)
+    token_type = classify_token(new_token, new_token_id, special_ids)
+    event_key = (sample_id, generated_pos)
+    event_index = token_event_counts[event_key]
+    token_event_counts[event_key] += 1
+    prob = float(item["prob"]) if item.get("prob") is not None else None
+    token_events.append(
+        {
+            "event_id": f"{sample_id}:{generated_pos}:{event_index}",
+            "token_id": f"{sample_id}:{generated_pos}",
+            "sample_id": sample_id,
+            "sample_index": sample_index,
+            "generated_pos": generated_pos,
+            "event_index": event_index,
+            "global_iteration": global_iteration,
+            "block_index": block_index,
+            "block_iteration": block_iteration,
+            "block_offset": block_offset,
+            "event_type": event_type,
+            "old_token": old_token,
+            "old_token_id": old_token_id,
+            "new_token": new_token,
+            "new_token_id": new_token_id,
+            "prob": prob,
+            "token_type": token_type,
+            "is_critical": is_critical_type(token_type),
+            "is_commit_event": False,
+            "changed_token": old_token_id != new_token_id,
+            "passes_run_threshold": passes_threshold(
+                event_type, prob, threshold, edit_threshold
+            ),
+        }
+    )
 
 
 def update_answer_span_types(token_rows: list[dict[str, Any]]) -> None:
@@ -319,13 +382,195 @@ def analyze_trace(
     if block_size <= 0:
         raise ValueError(f"{trace_path}: first trace event is missing a positive block_size")
 
-    segments = split_trace_into_block_segments(trace_events)
-    segment_index = 0
     token_events: list[dict[str, Any]] = []
     token_event_counts: dict[tuple[str, int], int] = defaultdict(int)
     sample_block_totals: dict[tuple[str, int], int] = {}
     sample_global_totals: dict[str, int] = defaultdict(int)
     warnings: list[str] = []
+
+    if has_request_aligned_trace(trace_events):
+        build_events_from_request_aligned_trace(
+            trace_events=trace_events,
+            details=details,
+            tokenizer=tokenizer,
+            special_ids=special_ids,
+            block_size=block_size,
+            token_events=token_events,
+            token_event_counts=token_event_counts,
+            sample_block_totals=sample_block_totals,
+            sample_global_totals=sample_global_totals,
+            warnings=warnings,
+        )
+    else:
+        build_events_from_legacy_trace(
+            trace_events=trace_events,
+            details=details,
+            tokenizer=tokenizer,
+            special_ids=special_ids,
+            block_size=block_size,
+            token_events=token_events,
+            token_event_counts=token_event_counts,
+            sample_block_totals=sample_block_totals,
+            sample_global_totals=sample_global_totals,
+            warnings=warnings,
+        )
+
+    token_summary = build_token_summary(
+        token_events=token_events,
+        sample_block_totals=sample_block_totals,
+        high_confidence_threshold=high_confidence_threshold,
+        early_fraction=early_fraction,
+        late_fraction=late_fraction,
+    )
+    update_answer_span_types(token_summary)
+    propagate_final_token_types(token_events, token_summary)
+    sample_summary = build_sample_summary(details, token_summary, token_events, sample_global_totals)
+    critical_stats = build_critical_token_stats(token_summary, details)
+
+    write_csv(paths.token_events_path, token_events, TOKEN_EVENTS_FIELDS)
+    write_csv(paths.token_summary_path, token_summary, TOKEN_SUMMARY_FIELDS)
+    write_csv(paths.sample_summary_path, sample_summary, SAMPLE_SUMMARY_FIELDS)
+    write_csv(paths.critical_token_stats_path, critical_stats, CRITICAL_STATS_FIELDS)
+    write_report(
+        paths=paths,
+        trace_path=trace_path,
+        details_path=details_path,
+        model_path=model_path,
+        warnings=warnings,
+        sample_summary=sample_summary,
+        token_summary=token_summary,
+        critical_stats=critical_stats,
+    )
+    return paths
+
+
+def build_events_from_request_aligned_trace(
+    *,
+    trace_events: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    tokenizer: Any,
+    special_ids: set[int],
+    block_size: int,
+    token_events: list[dict[str, Any]],
+    token_event_counts: dict[tuple[str, int], int],
+    sample_block_totals: dict[tuple[str, int], int],
+    sample_global_totals: dict[str, int],
+    warnings: list[str],
+) -> None:
+    request_order: list[str] = []
+    seen_requests: set[str] = set()
+    for event in trace_events:
+        request_id = event.get("request_id")
+        if request_id is None:
+            continue
+        request_id = str(request_id)
+        if request_id not in seen_requests:
+            seen_requests.add(request_id)
+            request_order.append(request_id)
+
+    if len(request_order) != len(details):
+        warnings.append(
+            f"Request-aligned trace has {len(request_order)} request id(s), "
+            f"but details has {len(details)} sample(s). Extra requests are ignored; "
+            "missing requests produce samples with no token events."
+        )
+
+    detail_by_request: dict[str, dict[str, Any]] = {}
+    for request_id, detail in zip(request_order, details):
+        detail_by_request[request_id] = detail
+
+    block_iteration_totals: dict[tuple[str, int], int] = defaultdict(int)
+    for event in trace_events:
+        request_id = event.get("request_id")
+        block_start = event.get("dllm_block_offset")
+        if request_id is None or block_start is None:
+            continue
+        key = (str(request_id), int(block_start))
+        block_iteration_totals[key] = max(
+            block_iteration_totals[key],
+            int(event.get("global_iteration", 0)),
+        )
+
+    block_global_offsets: dict[tuple[str, int], int] = {}
+    for request_id in request_order:
+        cumulative = 0
+        block_starts = sorted(
+            block_start
+            for rid, block_start in block_iteration_totals
+            if rid == request_id
+        )
+        for block_start in block_starts:
+            block_global_offsets[(request_id, block_start)] = cumulative
+            cumulative += block_iteration_totals[(request_id, block_start)]
+
+        detail = detail_by_request.get(request_id)
+        if detail is not None:
+            sample_id = str(detail.get("id", detail.get("index")))
+            sample_global_totals[sample_id] = cumulative
+
+    for trace_event in trace_events:
+        request_id = trace_event.get("request_id")
+        block_start = trace_event.get("dllm_block_offset")
+        if request_id is None or block_start is None:
+            continue
+        request_id = str(request_id)
+        block_start = int(block_start)
+        detail = detail_by_request.get(request_id)
+        if detail is None:
+            continue
+
+        sample_id = str(detail.get("id", detail.get("index")))
+        sample_index = int(detail.get("index", 0))
+        threshold = float(detail.get("threshold", 0.0))
+        edit_threshold = float(detail.get("edit_threshold", 0.0))
+        block_index = block_start // block_size
+        block_iteration = int(trace_event.get("global_iteration", 0))
+        global_iteration = block_global_offsets.get((request_id, block_start), 0) + block_iteration
+        sample_block_totals[(sample_id, block_index)] = block_iteration_totals[
+            (request_id, block_start)
+        ]
+
+        for event_type, list_name in (
+            ("mask_fill", "mask_fills"),
+            ("edit", "edits"),
+            ("remask", "remasks"),
+        ):
+            for item in trace_event.get(list_name) or []:
+                block_offset = int(item["block_offset"])
+                append_token_event(
+                    token_events=token_events,
+                    token_event_counts=token_event_counts,
+                    tokenizer=tokenizer,
+                    special_ids=special_ids,
+                    sample_id=sample_id,
+                    sample_index=sample_index,
+                    generated_pos=block_start + block_offset,
+                    global_iteration=global_iteration,
+                    block_index=block_index,
+                    block_iteration=block_iteration,
+                    block_offset=block_offset,
+                    event_type=event_type,
+                    item=item,
+                    threshold=threshold,
+                    edit_threshold=edit_threshold,
+                )
+
+
+def build_events_from_legacy_trace(
+    *,
+    trace_events: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    tokenizer: Any,
+    special_ids: set[int],
+    block_size: int,
+    token_events: list[dict[str, Any]],
+    token_event_counts: dict[tuple[str, int], int],
+    sample_block_totals: dict[tuple[str, int], int],
+    sample_global_totals: dict[str, int],
+    warnings: list[str],
+) -> None:
+    segments = split_trace_into_block_segments(trace_events)
+    segment_index = 0
 
     for detail in details:
         sample_id = str(detail.get("id", detail.get("index")))
@@ -358,78 +603,31 @@ def analyze_trace(
                 ):
                     for item in trace_event.get(list_name) or []:
                         block_offset = int(item["block_offset"])
-                        generated_pos = block_index * block_size + block_offset
-                        old_token_id = int(item["old_token_id"])
-                        new_token_id = int(item["new_token_id"])
-                        old_token = decode_token(tokenizer, old_token_id)
-                        new_token = decode_token(tokenizer, new_token_id)
-                        token_type = classify_token(new_token, new_token_id, special_ids)
-                        event_key = (sample_id, generated_pos)
-                        event_index = token_event_counts[event_key]
-                        token_event_counts[event_key] += 1
-                        prob = float(item["prob"]) if item.get("prob") is not None else None
-                        token_events.append(
-                            {
-                                "event_id": f"{sample_id}:{generated_pos}:{event_index}",
-                                "token_id": f"{sample_id}:{generated_pos}",
-                                "sample_id": sample_id,
-                                "sample_index": sample_index,
-                                "generated_pos": generated_pos,
-                                "event_index": event_index,
-                                "global_iteration": global_iteration,
-                                "block_index": block_index,
-                                "block_iteration": block_iteration,
-                                "block_offset": block_offset,
-                                "event_type": event_type,
-                                "old_token": old_token,
-                                "old_token_id": old_token_id,
-                                "new_token": new_token,
-                                "new_token_id": new_token_id,
-                                "prob": prob,
-                                "token_type": token_type,
-                                "is_critical": is_critical_type(token_type),
-                                "is_commit_event": False,
-                                "changed_token": old_token_id != new_token_id,
-                                "passes_run_threshold": passes_threshold(
-                                    event_type, prob, threshold, edit_threshold
-                                ),
-                            }
+                        append_token_event(
+                            token_events=token_events,
+                            token_event_counts=token_event_counts,
+                            tokenizer=tokenizer,
+                            special_ids=special_ids,
+                            sample_id=sample_id,
+                            sample_index=sample_index,
+                            generated_pos=block_index * block_size + block_offset,
+                            global_iteration=global_iteration,
+                            block_index=block_index,
+                            block_iteration=block_iteration,
+                            block_offset=block_offset,
+                            event_type=event_type,
+                            item=item,
+                            threshold=threshold,
+                            edit_threshold=edit_threshold,
                         )
             cumulative_iteration_offset += total_block_iterations
 
     if segment_index < len(segments):
         warnings.append(
             f"{len(segments) - segment_index} unassigned trace block segment(s). "
-            "This usually means completion_tokens undercounted generated blocks."
+            "This legacy trace has no request_id/dllm_block_offset metadata, so "
+            "the analyzer had to estimate sample alignment from completion_tokens."
         )
-
-    token_summary = build_token_summary(
-        token_events=token_events,
-        sample_block_totals=sample_block_totals,
-        high_confidence_threshold=high_confidence_threshold,
-        early_fraction=early_fraction,
-        late_fraction=late_fraction,
-    )
-    update_answer_span_types(token_summary)
-    propagate_final_token_types(token_events, token_summary)
-    sample_summary = build_sample_summary(details, token_summary, token_events, sample_global_totals)
-    critical_stats = build_critical_token_stats(token_summary, details)
-
-    write_csv(paths.token_events_path, token_events, TOKEN_EVENTS_FIELDS)
-    write_csv(paths.token_summary_path, token_summary, TOKEN_SUMMARY_FIELDS)
-    write_csv(paths.sample_summary_path, sample_summary, SAMPLE_SUMMARY_FIELDS)
-    write_csv(paths.critical_token_stats_path, critical_stats, CRITICAL_STATS_FIELDS)
-    write_report(
-        paths=paths,
-        trace_path=trace_path,
-        details_path=details_path,
-        model_path=model_path,
-        warnings=warnings,
-        sample_summary=sample_summary,
-        token_summary=token_summary,
-        critical_stats=critical_stats,
-    )
-    return paths
 
 
 def build_token_summary(
