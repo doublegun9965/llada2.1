@@ -172,11 +172,24 @@ index a572fda..41f00c2 100644
  
          if any_changed_in_last_step:
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index 6fcf81e..d5de0a5 100644
+index 1671c5e..e53bf3d 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
-@@ -436,0 +437,2 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+@@ -440,6 +440,9 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+     # For dumper: request IDs for cross-step sequence tracking
+     rids: Optional[List[str]] = None
+ 
 +    # Diffusion LLM block offsets for trace/event alignment.
 +    dllm_block_offsets: Optional[List[int]] = None
-@@ -492,0 +495 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
++
+     @classmethod
+     def init_new(
+         cls,
+@@ -490,6 +493,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+             return_hidden_states_before_norm=batch.return_hidden_states_before_norm,
+             return_pooled_hidden_states=batch.return_pooled_hidden_states,
+             rids=[req.rid for req in batch.reqs],
 +            dllm_block_offsets=batch.dllm_block_offsets,
+         )
+         device = model_runner.device
+ 
