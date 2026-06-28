@@ -28,6 +28,7 @@ class SGLangClient:
         *,
         model: str,
         prompt: str,
+        request_id: str | None = None,
         temperature: float = 0.0,
         max_tokens: int = 256,
         extra_body: dict[str, Any] | None = None,
@@ -40,6 +41,8 @@ class SGLangClient:
         }
         if extra_body:
             payload.update(extra_body)
+        if request_id is not None:
+            payload["rid"] = request_id
 
         response = httpx.post(
             f"{self.base_url}/chat/completions",
@@ -57,6 +60,7 @@ class SGLangClient:
         *,
         model: str,
         prompt: str,
+        request_id: str | None = None,
         temperature: float = 0.0,
         max_tokens: int = 256,
         extra_body: dict[str, Any] | None = None,
@@ -69,6 +73,8 @@ class SGLangClient:
         }
         if extra_body:
             payload.update(extra_body)
+        if request_id is not None:
+            payload["rid"] = request_id
 
         response = httpx.post(
             f"{self.base_url}/completions",

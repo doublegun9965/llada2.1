@@ -139,7 +139,7 @@ def parse_args() -> argparse.Namespace:
             "Enable SGLang dLLM tracing during the main evaluation and write "
             "sample_summary.csv, token_summary.csv, token_events.csv, and "
             "critical_token_stats.csv for each threshold pair. Requires managed "
-            "server mode and --batch-size 1 because the current trace patch has no request id."
+            "server mode and --batch-size 1 for sequential trace capture."
         ),
     )
     parser.add_argument(
@@ -509,6 +509,7 @@ def evaluate_one_example(
     sleep_seconds: float,
 ) -> dict[str, Any]:
     user_prompt = build_gsm8k_user_prompt(example.question)
+    trace_request_id = f"gsm8k-sample-{index:06d}"
     request_prompt = user_prompt
     assistant_prefix = ""
     assistant_prefix_token_ids: list[int] = []
@@ -528,6 +529,7 @@ def evaluate_one_example(
         result = client.completion(
             model=model,
             prompt=request_prompt,
+            request_id=trace_request_id,
             temperature=temperature,
             max_tokens=max_tokens,
             extra_body=extra_body,
@@ -536,6 +538,7 @@ def evaluate_one_example(
         result = client.chat_completion(
             model=model,
             prompt=user_prompt,
+            request_id=trace_request_id,
             temperature=temperature,
             max_tokens=max_tokens,
             extra_body=extra_body,
@@ -552,6 +555,7 @@ def evaluate_one_example(
         "id": example.example_id,
         "index": index,
         "total_examples": total_examples,
+        "trace_request_id": trace_request_id,
         "threshold": threshold,
         "edit_threshold": edit_threshold,
         "question": example.question,
@@ -762,8 +766,8 @@ def main() -> None:
         )
     if args.critical_token_analysis and args.batch_size != 1:
         raise ValueError(
-            "--critical-token-analysis requires --batch-size 1 because the current "
-            "SGLang trace patch does not record request ids for concurrent requests."
+            "--critical-token-analysis currently requires --batch-size 1 for sequential "
+            "trace capture."
         )
 
     thresholds = parse_thresholds(args.thresholds)

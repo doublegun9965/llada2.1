@@ -468,16 +468,49 @@ def build_events_from_request_aligned_trace(
             seen_requests.add(request_id)
             request_order.append(request_id)
 
-    if len(request_order) != len(details):
-        warnings.append(
-            f"Request-aligned trace has {len(request_order)} request id(s), "
-            f"but details has {len(details)} sample(s). Extra requests are ignored; "
-            "missing requests produce samples with no token events."
-        )
+    detail_request_ids = [detail.get("trace_request_id") for detail in details]
+    has_explicit_detail_ids = all(request_id is not None for request_id in detail_request_ids)
 
     detail_by_request: dict[str, dict[str, Any]] = {}
-    for request_id, detail in zip(request_order, details):
-        detail_by_request[request_id] = detail
+    if has_explicit_detail_ids:
+        for request_id, detail in zip(detail_request_ids, details):
+            request_id = str(request_id)
+            if request_id in detail_by_request:
+                raise ValueError(f"Duplicate trace_request_id in details: {request_id}")
+            detail_by_request[request_id] = detail
+
+        trace_request_ids = set(request_order)
+        missing_request_ids = sorted(set(detail_by_request) - trace_request_ids)
+        if missing_request_ids:
+            preview = ", ".join(missing_request_ids[:5])
+            raise ValueError(
+                f"Trace is missing {len(missing_request_ids)} request id(s) present in details: "
+                f"{preview}"
+            )
+
+        extra_request_ids = sorted(trace_request_ids - set(detail_by_request))
+        if extra_request_ids:
+            warnings.append(
+                f"Request-aligned trace has {len(extra_request_ids)} extra request id(s) "
+                "not present in details; they are ignored."
+            )
+    else:
+        if any(request_id is not None for request_id in detail_request_ids):
+            raise ValueError(
+                "Only some details records contain trace_request_id; exact trace alignment is impossible."
+            )
+        if len(request_order) != len(details):
+            raise ValueError(
+                f"Request-aligned trace has {len(request_order)} request id(s), but details has "
+                f"{len(details)} sample(s). Details do not contain trace_request_id, so positional "
+                "alignment would be unsafe."
+            )
+        warnings.append(
+            "Details do not contain trace_request_id; request ids were matched by request order. "
+            "Regenerate details with the current evaluator for exact alignment."
+        )
+        for request_id, detail in zip(request_order, details):
+            detail_by_request[request_id] = detail
 
     block_iteration_totals: dict[tuple[str, int], int] = defaultdict(int)
     for event in trace_events:

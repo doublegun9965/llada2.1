@@ -411,6 +411,8 @@ python experiments/gsm8k_threshold_sweep.py \
   --critical-token-analysis
 ```
 
+当前评测脚本会为每个样本向 SGLang 发送唯一的 `rid`，并在 details JSONL 中保存同值的 `trace_request_id`。分析器使用这两个字段精确关联；SGLang 启动阶段残留的 warmup request 即使出现在 trace 中间，也会被识别为额外 request 并忽略。旧 details 没有 `trace_request_id` 时只允许 request 数量完全一致的顺序对齐，数量不一致会直接报错，避免生成错位统计。
+
 每个阈值组合会额外写：
 
 ```text
@@ -1157,6 +1159,8 @@ python experiments/gsm8k_threshold_sweep.py \
   --batch-size 1 \
   --critical-token-analysis
 ```
+
+The evaluator sends a unique SGLang `rid` for every sample and stores the same value as `trace_request_id` in the details JSONL. The analyzer joins on these fields, so a leftover startup warmup request is ignored even if it is not the last trace request. For old details without `trace_request_id`, positional alignment is allowed only when the request counts match; a mismatch now fails instead of producing shifted statistics.
 
 Each threshold pair additionally writes:
 
