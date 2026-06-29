@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 from collections import defaultdict
@@ -18,6 +19,7 @@ REQUIRED_FIELDS = {
     "old_token",
     "new_token",
 }
+TOKEN_TEXT_FIELDS = {"old_token", "new_token"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,9 +56,17 @@ def markdown_code(value: Any) -> str:
 def read_block_events(
     path: Path, *, sample_id: str, block_index: int
 ) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+    text = path.read_text(encoding="utf-8-sig")
+    header = text.splitlines()[0] if text else ""
+    padded_columns = any(field != field.strip() for field in header.split(","))
+    if padded_columns:
+        text = remove_separator_padding(text)
+
+    with io.StringIO(text, newline="") as handle:
         reader = csv.DictReader(handle)
-        fieldnames = reader.fieldnames or []
+        raw_fieldnames = reader.fieldnames or []
+        fieldnames = [name.strip() for name in raw_fieldnames]
+        reader.fieldnames = fieldnames
         missing = sorted(REQUIRED_FIELDS.difference(fieldnames))
         if missing:
             hint = (
@@ -67,12 +77,68 @@ def read_block_events(
             raise ValueError(
                 f"CSV is missing required field(s): {', '.join(missing)}.{hint}"
             )
-        return [
-            row
-            for row in reader
-            if str(row["sample_id"]) == sample_id
-            and int(row["block_index"]) == block_index
-        ]
+        rows = []
+        for raw_row in reader:
+            row = {
+                name: normalize_csv_value(name, value, padded_columns=padded_columns)
+                for name, value in raw_row.items()
+                if name is not None
+            }
+            if (
+                str(row["sample_id"]) == sample_id
+                and int(row["block_index"]) == block_index
+            ):
+                rows.append(row)
+        return rows
+
+
+def normalize_csv_value(name: str, value: str | None, *, padded_columns: bool) -> str:
+    if value is None:
+        return ""
+    if name not in TOKEN_TEXT_FIELDS:
+        return value.strip()
+    if not padded_columns:
+        return value
+
+    normalized = value.rstrip(" ")
+    if not normalized and value:
+        return " "
+    return normalized
+
+
+def remove_separator_padding(text: str) -> str:
+    """Remove one formatting space after delimiters, without touching quoted tokens."""
+    result: list[str] = []
+    in_quotes = False
+    at_field_start = True
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_quotes:
+            result.append(char)
+            if char == '"':
+                if index + 1 < len(text) and text[index + 1] == '"':
+                    result.append('"')
+                    index += 1
+                else:
+                    in_quotes = False
+            index += 1
+            continue
+
+        if at_field_start and char == '"':
+            in_quotes = True
+            at_field_start = False
+        elif char == ",":
+            at_field_start = True
+        elif char in "\r\n":
+            at_field_start = True
+        else:
+            at_field_start = False
+        result.append(char)
+        if char == "," and index + 1 < len(text) and text[index + 1] == " ":
+            index += 1
+        index += 1
+    return "".join(result)
 
 
 def initial_state(rows: list[dict[str, str]]) -> tuple[list[str], list[str]]:
