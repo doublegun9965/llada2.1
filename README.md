@@ -426,6 +426,22 @@ outputs/gsm8k/run_<timestamp>/
     report.md
 ```
 
+要查看某个样本的单个 block 在各轮迭代中的文本变化，可以把
+`token_events.csv` 渲染成 Markdown：
+
+```bash
+python scripts/render_token_events_block.py \
+  outputs/gsm8k/run_<timestamp>/critical_token_analysis/threshold_0p5_edit_0p0/token_events.csv \
+  --sample-id 37 \
+  --block-index 7
+```
+
+报告包含初始状态和每个有事件记录的 block iteration：完整解码文本、带
+block offset 的 token 序列，以及本轮事件类型和概率。当前轮发生变化的 token
+会加粗。默认输出到 CSV 同目录，也可以用 `--output-md` 指定路径。这里必须传
+`token_events.csv`；`token_summary.csv` 只有最终 token 和提交/编辑统计，不能
+还原逐轮文本。
+
 开启该模式时，脚本会在本次生成的 DLLM YAML 中自动设置 `trace_max_events: null` 和 `trace_snapshot_every: 0`，避免分析 trace 被截断，同时不写大体积 block snapshot。
 
 如果 report 里仍然出现 `unassigned trace block segment(s)`，说明分析的是旧 trace，或者服务器上的 `dllm_trace.patch` 还没有重新应用。旧 trace 没有 `request_id/dllm_block_offset`，分析脚本只能从 `completion_tokens` 估计 block 归属，无法完全修复；请重新应用 patch 后重跑 sweep。
