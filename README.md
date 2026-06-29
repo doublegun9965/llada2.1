@@ -422,6 +422,9 @@ outputs/gsm8k/run_<timestamp>/
     sample_summary.csv
     token_summary.csv
     token_events.csv
+    token_proposals.csv
+    edit_proposals.csv
+    edit_annotation.md
     critical_token_stats.csv
     report.md
 ```
@@ -442,7 +445,9 @@ block offset 的 token 序列，以及本轮事件类型和概率。当前轮发
 `token_events.csv`；`token_summary.csv` 只有最终 token 和提交/编辑统计，不能
 还原逐轮文本。
 
-开启该模式时，脚本会在本次生成的 DLLM YAML 中自动设置 `trace_max_events: null` 和 `trace_snapshot_every: 0`，避免分析 trace 被截断，同时不写大体积 block snapshot。
+`token_proposals.csv` 每行对应一次 forward 中的一个非 prompt 位置，包含当前、top-1、top-2 token 及其概率/logit、`A`、`D`、entropy、决策结果、token age 和 state hash。`edit_proposals.csv` 只保留 top-1 与当前 token 不同的 T2T proposal，并预留 `manual_label`、`manual_reason`、`manual_notes` 三列；建议标签为 `beneficial`、`harmful`、`neutral`、`uncertain`。重复运行分析器时，会按 `proposal_id` 保留已有人工标注。`edit_annotation.md` 按 sample/block/iteration 展示 before/after 文本和 proposal 表，便于人工浏览。
+
+开启该模式时，脚本会在本次生成的 DLLM YAML 中自动设置 `trace_max_events: null` 和 `trace_snapshot_every: 1`，避免分析 trace 被截断，并保存每轮 block 快照供人工判断上下文。该模式的数据量和显存/运行开销明显高于普通 sweep，人工采样阶段建议先使用较小的 `--limit`。
 
 如果 report 里仍然出现 `unassigned trace block segment(s)`，说明分析的是旧 trace，或者服务器上的 `dllm_trace.patch` 还没有重新应用。旧 trace 没有 `request_id/dllm_block_offset`，分析脚本只能从 `completion_tokens` 估计 block 归属，无法完全修复；请重新应用 patch 后重跑 sweep。
 
@@ -1187,11 +1192,16 @@ outputs/gsm8k/run_<timestamp>/
     sample_summary.csv
     token_summary.csv
     token_events.csv
+    token_proposals.csv
+    edit_proposals.csv
+    edit_annotation.md
     critical_token_stats.csv
     report.md
 ```
 
-When this mode is enabled, the generated DLLM YAML automatically sets `trace_max_events: null` and `trace_snapshot_every: 0`, so analysis traces are not truncated and do not include large block snapshots.
+`token_proposals.csv` has one row per non-prompt position and forward pass. It records the current, top-1, and top-2 tokens and their probabilities/logits, `A`, `D`, entropy, decision outcome, token age, and state hash. `edit_proposals.csv` keeps only T2T proposals whose top-1 differs from the current token and adds `manual_label`, `manual_reason`, and `manual_notes` columns. Recommended labels are `beneficial`, `harmful`, `neutral`, and `uncertain`. Rerunning the analyzer preserves existing annotations by `proposal_id`. `edit_annotation.md` groups before/after context and proposals by sample, block, and iteration.
+
+When this mode is enabled, the generated DLLM YAML automatically sets `trace_max_events: null` and `trace_snapshot_every: 1`, so traces are not truncated and every iteration has block snapshots for manual review. This mode produces substantially more data and adds runtime/memory overhead; use a small `--limit` for the initial annotation study.
 
 If the report still shows `unassigned trace block segment(s)`, the input is an old trace or the server-side `dllm_trace.patch` was not reapplied. Old traces do not contain `request_id/dllm_block_offset`, so the analyzer can only estimate block ownership from `completion_tokens`; rerun the sweep after applying the updated patch.
 

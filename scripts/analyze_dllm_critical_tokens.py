@@ -79,6 +79,9 @@ CRITICAL_TYPES = {
 class AnalysisPaths:
     output_dir: Path
     token_events_path: Path
+    token_proposals_path: Path
+    edit_proposals_path: Path
+    edit_annotation_path: Path
     token_summary_path: Path
     sample_summary_path: Path
     critical_token_stats_path: Path
@@ -143,6 +146,9 @@ def make_paths(output_dir: Path) -> AnalysisPaths:
     return AnalysisPaths(
         output_dir=output_dir,
         token_events_path=output_dir / "token_events.csv",
+        token_proposals_path=output_dir / "token_proposals.csv",
+        edit_proposals_path=output_dir / "edit_proposals.csv",
+        edit_annotation_path=output_dir / "edit_annotation.md",
         token_summary_path=output_dir / "token_summary.csv",
         sample_summary_path=output_dir / "sample_summary.csv",
         critical_token_stats_path=output_dir / "critical_token_stats.csv",
@@ -426,8 +432,25 @@ def analyze_trace(
     propagate_final_token_types(token_events, token_summary)
     sample_summary = build_sample_summary(details, token_summary, token_events, sample_global_totals)
     critical_stats = build_critical_token_stats(token_summary, details)
+    token_proposals = build_token_proposals(
+        trace_events=trace_events,
+        details=details,
+        tokenizer=tokenizer,
+        special_ids=special_ids,
+        block_size=block_size,
+    )
+    if not token_proposals:
+        warnings.append(
+            "Trace contains no per-position proposals. Reapply the current "
+            "dllm_trace.patch and rerun generation to produce proposal tables."
+        )
+    edit_proposals = [row for row in token_proposals if row.get("proposed_edit") is True]
+    preserve_manual_annotations(paths.edit_proposals_path, edit_proposals)
 
     write_csv(paths.token_events_path, token_events, TOKEN_EVENTS_FIELDS)
+    write_csv(paths.token_proposals_path, token_proposals, TOKEN_PROPOSAL_FIELDS)
+    write_csv(paths.edit_proposals_path, edit_proposals, EDIT_PROPOSAL_FIELDS)
+    write_edit_annotation(paths.edit_annotation_path, edit_proposals)
     write_csv(paths.token_summary_path, token_summary, TOKEN_SUMMARY_FIELDS)
     write_csv(paths.sample_summary_path, sample_summary, SAMPLE_SUMMARY_FIELDS)
     write_csv(paths.critical_token_stats_path, critical_stats, CRITICAL_STATS_FIELDS)
@@ -440,8 +463,250 @@ def analyze_trace(
         sample_summary=sample_summary,
         token_summary=token_summary,
         critical_stats=critical_stats,
+        token_proposals=token_proposals,
+        edit_proposals=edit_proposals,
     )
     return paths
+
+
+def request_detail_mapping(
+    trace_events: list[dict[str, Any]], details: list[dict[str, Any]]
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    request_order: list[str] = []
+    seen: set[str] = set()
+    for event in trace_events:
+        request_id = event.get("request_id")
+        if request_id is None:
+            continue
+        request_id = str(request_id)
+        if request_id not in seen:
+            seen.add(request_id)
+            request_order.append(request_id)
+
+    explicit_ids = [detail.get("trace_request_id") for detail in details]
+    if all(request_id is not None for request_id in explicit_ids):
+        return request_order, {
+            str(request_id): detail
+            for request_id, detail in zip(explicit_ids, details)
+        }
+    return request_order, dict(zip(request_order, details))
+
+
+def build_token_proposals(
+    *,
+    trace_events: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    tokenizer: Any,
+    special_ids: set[int],
+    block_size: int,
+) -> list[dict[str, Any]]:
+    if not has_request_aligned_trace(trace_events):
+        return []
+
+    request_order, detail_by_request = request_detail_mapping(trace_events, details)
+    block_iteration_totals: dict[tuple[str, int], int] = defaultdict(int)
+    for event in trace_events:
+        request_id = event.get("request_id")
+        block_start = event.get("dllm_block_offset")
+        if request_id is None or block_start is None:
+            continue
+        key = (str(request_id), int(block_start))
+        block_iteration_totals[key] = max(
+            block_iteration_totals[key], int(event.get("global_iteration", 0))
+        )
+
+    global_offsets: dict[tuple[str, int], int] = {}
+    for request_id in request_order:
+        cumulative = 0
+        for block_start in sorted(
+            start for rid, start in block_iteration_totals if rid == request_id
+        ):
+            global_offsets[(request_id, block_start)] = cumulative
+            cumulative += block_iteration_totals[(request_id, block_start)]
+
+    rows: list[dict[str, Any]] = []
+    for event in trace_events:
+        request_id_value = event.get("request_id")
+        block_start_value = event.get("dllm_block_offset")
+        proposals = event.get("proposals") or []
+        if request_id_value is None or block_start_value is None or not proposals:
+            continue
+        request_id = str(request_id_value)
+        detail = detail_by_request.get(request_id)
+        if detail is None:
+            continue
+
+        block_start = int(block_start_value)
+        block_index = int(event.get("dllm_block_index", block_start // block_size))
+        block_iteration = int(event.get("global_iteration", 0))
+        global_iteration = global_offsets.get((request_id, block_start), 0) + block_iteration
+        sample_id = str(detail.get("id", detail.get("index")))
+        before_ids = event.get("block_token_ids_before")
+        after_ids = event.get("block_token_ids")
+        before_text = (
+            tokenizer.decode(before_ids, skip_special_tokens=False)
+            if isinstance(before_ids, list)
+            else ""
+        )
+        after_text = (
+            tokenizer.decode(after_ids, skip_special_tokens=False)
+            if isinstance(after_ids, list)
+            else ""
+        )
+
+        for proposal in proposals:
+            block_offset = int(proposal["block_offset"])
+            current_token_id = int(proposal["current_token_id"])
+            proposed_token_id = int(proposal["proposed_token_id"])
+            second_token_id = int(proposal["second_token_id"])
+            proposed_token = decode_token(tokenizer, proposed_token_id)
+            advantage = proposal.get("A", proposal.get("replacement_advantage"))
+            margin = proposal.get("D", proposal.get("candidate_margin"))
+            proposal_id = (
+                f"{request_id}:{block_start}:{block_iteration}:{block_offset}"
+            )
+            rows.append(
+                {
+                    "proposal_id": proposal_id,
+                    "request_id": request_id,
+                    "sample_id": sample_id,
+                    "sample_index": detail.get("index"),
+                    "sample_correct": detail.get("correct"),
+                    "gold_answer": detail.get("gold_answer"),
+                    "predicted_answer": detail.get("predicted_answer"),
+                    "threshold": event.get("threshold", detail.get("threshold")),
+                    "edit_threshold": event.get(
+                        "edit_threshold", detail.get("edit_threshold")
+                    ),
+                    "block_index": block_index,
+                    "block_iteration": block_iteration,
+                    "global_iteration": global_iteration,
+                    "block_offset": block_offset,
+                    "generated_pos": block_start + block_offset,
+                    "state_hash": event.get("state_hash"),
+                    "proposal_type": proposal.get("proposal_type"),
+                    "current_token": decode_token(tokenizer, current_token_id),
+                    "proposed_token": proposed_token,
+                    "second_token": decode_token(tokenizer, second_token_id),
+                    "current_token_id": current_token_id,
+                    "proposed_token_id": proposed_token_id,
+                    "second_token_id": second_token_id,
+                    "p_old": proposal.get("p_old"),
+                    "p_new": proposal.get("p_new"),
+                    "p_second": proposal.get("p_second"),
+                    "old_logit": proposal.get("old_logit"),
+                    "new_logit": proposal.get("new_logit"),
+                    "second_logit": proposal.get("second_logit"),
+                    "A": advantage,
+                    "D": margin,
+                    "replacement_advantage": advantage,
+                    "candidate_margin": margin,
+                    "entropy": proposal.get("entropy"),
+                    "proposed_edit": proposal.get("proposed_edit"),
+                    "accepted_edit": proposal.get("accepted_edit"),
+                    "accepted_update": proposal.get("accepted_update"),
+                    "rejected_reason": proposal.get("rejected_reason"),
+                    "token_age": proposal.get("token_age"),
+                    "token_type": classify_token(
+                        proposed_token, proposed_token_id, special_ids
+                    ),
+                    "manual_label": "",
+                    "manual_reason": "",
+                    "manual_notes": "",
+                    "_question": detail.get("question", ""),
+                    "_before_text": before_text,
+                    "_after_text": after_text,
+                }
+            )
+    return rows
+
+
+def preserve_manual_annotations(
+    path: Path, rows: list[dict[str, Any]]
+) -> None:
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        existing = {
+            row.get("proposal_id", ""): row for row in csv.DictReader(handle)
+        }
+    for row in rows:
+        old = existing.get(str(row["proposal_id"]))
+        if old is None:
+            continue
+        for field in MANUAL_ANNOTATION_FIELDS:
+            row[field] = old.get(field, "")
+
+
+def markdown_code(value: Any) -> str:
+    text = json.dumps("" if value is None else str(value), ensure_ascii=False)
+    return f"`{text.replace('|', '&#124;')}`"
+
+
+def write_edit_annotation(path: Path, rows: list[dict[str, Any]]) -> None:
+    lines = [
+        "# Edit Proposal Annotation",
+        "",
+        "Annotate `manual_label` in `edit_proposals.csv` as "
+        "`beneficial`, `harmful`, `neutral`, or `uncertain`, then fill "
+        "`manual_reason` and optional `manual_notes`.",
+        "",
+        f"Proposed edits: `{len(rows)}`",
+        "",
+    ]
+    grouped: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (
+                str(row["sample_id"]),
+                int(row["block_index"]),
+                int(row["block_iteration"]),
+            )
+        ].append(row)
+
+    for (sample_id, block_index, block_iteration), group in grouped.items():
+        first = group[0]
+        lines.extend(
+            [
+                f"## Sample {sample_id}: block {block_index}, iteration {block_iteration}",
+                "",
+                f"- Correct: `{as_bool_text(first.get('sample_correct'))}`",
+                f"- State hash: `{first.get('state_hash', '')}`",
+                f"- Gold answer: {markdown_code(first.get('gold_answer'))}",
+                f"- Predicted answer: {markdown_code(first.get('predicted_answer'))}",
+                "",
+            ]
+        )
+        if first.get("_question"):
+            lines.extend(["Question:", "", str(first["_question"]), ""])
+        if first.get("_before_text"):
+            lines.extend(
+                ["Before:", "", "```text", str(first["_before_text"]), "```", ""]
+            )
+        if first.get("_after_text"):
+            lines.extend(
+                ["After:", "", "```text", str(first["_after_text"]), "```", ""]
+            )
+        lines.extend(
+            [
+                "| Offset | Current | Proposed | Second | p_old | p_new | p_second | A | D | Entropy | Accepted | Rejected reason | Manual label | Manual reason |",
+                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|:---:|---|---|---|",
+            ]
+        )
+        for row in sorted(group, key=lambda item: int(item["block_offset"])):
+            lines.append(
+                "| "
+                f"{row['block_offset']} | {markdown_code(row['current_token'])} | "
+                f"{markdown_code(row['proposed_token'])} | {markdown_code(row['second_token'])} | "
+                f"{format_float(row.get('p_old'))} | {format_float(row.get('p_new'))} | "
+                f"{format_float(row.get('p_second'))} | {format_float(row.get('A'))} | "
+                f"{format_float(row.get('D'))} | {format_float(row.get('entropy'))} | "
+                f"{as_bool_text(row.get('accepted_edit'))} | "
+                f"{row.get('rejected_reason', '')} | {row.get('manual_label', '')} | "
+                f"{str(row.get('manual_reason', '')).replace('|', '&#124;')} |"
+            )
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_events_from_request_aligned_trace(
@@ -877,6 +1142,8 @@ def write_report(
     sample_summary: list[dict[str, Any]],
     token_summary: list[dict[str, Any]],
     critical_stats: list[dict[str, Any]],
+    token_proposals: list[dict[str, Any]],
+    edit_proposals: list[dict[str, Any]],
 ) -> None:
     correct_samples = sum(1 for row in sample_summary if row.get("correct") is True)
     total_samples = len(sample_summary)
@@ -891,12 +1158,17 @@ def write_report(
         f"- Correct samples: `{correct_samples}`",
         f"- Token slots: `{len(token_summary)}`",
         f"- Critical token slots: `{len(critical_tokens)}`",
+        f"- Position proposals: `{len(token_proposals)}`",
+        f"- Proposed edits: `{len(edit_proposals)}`",
         "",
         "## Outputs",
         "",
         f"- `sample_summary.csv`: `{paths.sample_summary_path}`",
         f"- `token_summary.csv`: `{paths.token_summary_path}`",
         f"- `token_events.csv`: `{paths.token_events_path}`",
+        f"- `token_proposals.csv`: `{paths.token_proposals_path}`",
+        f"- `edit_proposals.csv`: `{paths.edit_proposals_path}`",
+        f"- `edit_annotation.md`: `{paths.edit_annotation_path}`",
         f"- `critical_token_stats.csv`: `{paths.critical_token_stats_path}`",
         "",
     ]
@@ -937,6 +1209,9 @@ def format_float(value: Any) -> str:
 
 def write_empty_outputs(paths: AnalysisPaths) -> None:
     write_csv(paths.token_events_path, [], TOKEN_EVENTS_FIELDS)
+    write_csv(paths.token_proposals_path, [], TOKEN_PROPOSAL_FIELDS)
+    write_csv(paths.edit_proposals_path, [], EDIT_PROPOSAL_FIELDS)
+    write_edit_annotation(paths.edit_annotation_path, [])
     write_csv(paths.token_summary_path, [], TOKEN_SUMMARY_FIELDS)
     write_csv(paths.sample_summary_path, [], SAMPLE_SUMMARY_FIELDS)
     write_csv(paths.critical_token_stats_path, [], CRITICAL_STATS_FIELDS)
@@ -1021,6 +1296,51 @@ TOKEN_EVENTS_FIELDS = [
     "changed_token",
     "passes_run_threshold",
 ]
+
+TOKEN_PROPOSAL_FIELDS = [
+    "proposal_id",
+    "request_id",
+    "sample_id",
+    "sample_index",
+    "sample_correct",
+    "gold_answer",
+    "predicted_answer",
+    "threshold",
+    "edit_threshold",
+    "block_index",
+    "block_iteration",
+    "global_iteration",
+    "block_offset",
+    "generated_pos",
+    "state_hash",
+    "proposal_type",
+    "current_token",
+    "proposed_token",
+    "second_token",
+    "current_token_id",
+    "proposed_token_id",
+    "second_token_id",
+    "p_old",
+    "p_new",
+    "p_second",
+    "old_logit",
+    "new_logit",
+    "second_logit",
+    "A",
+    "D",
+    "replacement_advantage",
+    "candidate_margin",
+    "entropy",
+    "proposed_edit",
+    "accepted_edit",
+    "accepted_update",
+    "rejected_reason",
+    "token_age",
+    "token_type",
+]
+
+MANUAL_ANNOTATION_FIELDS = ["manual_label", "manual_reason", "manual_notes"]
+EDIT_PROPOSAL_FIELDS = TOKEN_PROPOSAL_FIELDS + MANUAL_ANNOTATION_FIELDS
 
 CRITICAL_STATS_FIELDS = [
     "correct_group",

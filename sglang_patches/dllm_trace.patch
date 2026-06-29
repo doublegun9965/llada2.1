@@ -1,8 +1,9 @@
 diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
-index a572fda..41f00c2 100644
+index a572fda..a9ea940 100644
 --- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
 +++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
-@@ -1,3 +1,7 @@
+@@ -1,3 +1,8 @@
++import hashlib
 +import json
 +import time
 +from pathlib import Path
@@ -10,7 +11,7 @@ index a572fda..41f00c2 100644
  import numpy as np
  import torch
  import torch.nn.functional as F
-@@ -22,6 +26,55 @@ class JointThreshold(DllmAlgorithm):
+@@ -22,6 +27,177 @@ class JointThreshold(DllmAlgorithm):
              "max_post_edit_steps", 16
          )
          self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
@@ -24,6 +25,13 @@ index a572fda..41f00c2 100644
 +        )
 +        self._trace_events_written = 0
 +        self._trace_run_id = f"{int(time.time() * 1000)}"
++
++    @staticmethod
++    def _state_hash(token_ids: torch.Tensor) -> str:
++        serialized = ",".join(
++            str(int(token_id)) for token_id in token_ids.detach().cpu().tolist()
++        )
++        return hashlib.sha256(serialized.encode("ascii")).hexdigest()[:16]
 +
 +    def _trace_enabled(self) -> bool:
 +        return bool(self.trace_path) and (
@@ -63,33 +71,217 @@ index a572fda..41f00c2 100644
 +        with trace_path.open("a", encoding="utf-8") as handle:
 +            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 +        self._trace_events_written += 1
- 
++
++    def _trace_proposals(
++        self,
++        *,
++        curr_input_ids: torch.Tensor,
++        curr_prompt_mask: torch.Tensor,
++        proposed_tokens: torch.Tensor,
++        second_tokens: torch.Tensor,
++        proposed_probs: torch.Tensor,
++        current_probs: torch.Tensor,
++        second_probs: torch.Tensor,
++        proposed_logits: torch.Tensor,
++        current_logits: torch.Tensor,
++        second_logits: torch.Tensor,
++        entropy: torch.Tensor,
++        edit_transfer_index: torch.Tensor,
++        mask_transfer_index: torch.Tensor,
++        token_ages: torch.Tensor,
++    ) -> list[dict]:
++        records = []
++        accepted_updates = edit_transfer_index | mask_transfer_index
++        id_rows = (
++            torch.stack(
++                (curr_input_ids, proposed_tokens, second_tokens, token_ages), dim=-1
++            )
++            .detach()
++            .cpu()
++            .tolist()
++        )
++        metric_rows = (
++            torch.stack(
++                (
++                    current_probs,
++                    proposed_probs,
++                    second_probs,
++                    current_logits,
++                    proposed_logits,
++                    second_logits,
++                    entropy,
++                ),
++                dim=-1,
++            )
++            .float()
++            .detach()
++            .cpu()
++            .tolist()
++        )
++        decision_rows = (
++            torch.stack(
++                (curr_prompt_mask, edit_transfer_index, accepted_updates), dim=-1
++            )
++            .detach()
++            .cpu()
++            .tolist()
++        )
++        generated_positions = [
++            offset for offset, decision in enumerate(decision_rows) if not decision[0]
++        ]
++        for block_offset in generated_positions:
++            current_token_id, proposed_token_id, second_token_id, token_age = (
++                int(value) for value in id_rows[block_offset]
++            )
++            (
++                p_old,
++                p_new,
++                p_second,
++                old_logit,
++                new_logit,
++                second_logit,
++                position_entropy,
++            ) = (float(value) for value in metric_rows[block_offset])
++            current_is_mask = current_token_id == self.mask_id
++            proposed_edit = not current_is_mask and current_token_id != proposed_token_id
++            accepted_edit = bool(decision_rows[block_offset][1])
++            accepted_update = bool(decision_rows[block_offset][2])
++
++            if current_is_mask:
++                rejected_reason = "current_is_mask"
++            elif current_token_id == proposed_token_id:
++                rejected_reason = "same_as_current"
++            elif accepted_edit:
++                rejected_reason = ""
++            elif p_new <= self.edit_threshold:
++                rejected_reason = "below_edit_threshold"
++            else:
++                rejected_reason = "not_accepted"
++
++            replacement_advantage = new_logit - old_logit
++            candidate_margin = new_logit - second_logit
++            records.append(
++                {
++                    "block_offset": block_offset,
++                    "proposal_type": "m2t" if current_is_mask else "t2t",
++                    "current_token_id": current_token_id,
++                    "proposed_token_id": proposed_token_id,
++                    "second_token_id": second_token_id,
++                    "p_old": p_old,
++                    "p_new": p_new,
++                    "p_second": p_second,
++                    "old_logit": old_logit,
++                    "new_logit": new_logit,
++                    "second_logit": second_logit,
++                    "A": replacement_advantage,
++                    "D": candidate_margin,
++                    "replacement_advantage": replacement_advantage,
++                    "candidate_margin": candidate_margin,
++                    "entropy": position_entropy,
++                    "proposed_edit": proposed_edit,
++                    "accepted_edit": accepted_edit,
++                    "accepted_update": accepted_update,
++                    "rejected_reason": rejected_reason,
++                    "token_age": token_age,
++                }
++            )
++        return records
+
      def run(
          self,
-@@ -56,7 +109,9 @@ class JointThreshold(DllmAlgorithm):
+@@ -48,6 +224,9 @@ class JointThreshold(DllmAlgorithm):
+             start_list.append(prompt_mask.sum().item())
+
+         post_edit_steps = torch.zeros(batch_size, dtype=torch.int32, device=device)
++        token_ages = torch.zeros(
++            batch_size, self.block_size, dtype=torch.int32, device=device
++        )
+
+         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+         # Controls whether to perform an additional forward pass for KV cache persistence.
+@@ -56,7 +235,9 @@ class JointThreshold(DllmAlgorithm):
          any_changed_in_last_step = False
- 
+
          max_iterations = self.block_size + self.max_post_edit_steps
 +        global_iteration = 0
          for _ in range(max_iterations):
 +            global_iteration += 1
              if finished.all():
                  break
- 
-@@ -75,6 +130,7 @@ class JointThreshold(DllmAlgorithm):
+
+@@ -75,6 +256,8 @@ class JointThreshold(DllmAlgorithm):
                  curr_input_ids = forward_batch.input_ids[block_start:block_end]
                  curr_logits = logits_output.full_logits[block_start:block_end]
                  curr_prompt_mask = prompt_masks[i]
 +                old_input_ids = curr_input_ids.clone()
- 
++                state_hash = self._state_hash(old_input_ids) if self._trace_enabled() else None
+
                  if self.penalty_lambda > 0:
                      prev_ids = curr_input_ids[:-1]
-@@ -94,16 +150,20 @@ class JointThreshold(DllmAlgorithm):
- 
+@@ -83,27 +266,73 @@ class JointThreshold(DllmAlgorithm):
+                     )
+
+                 x = torch.argmax(curr_logits, dim=-1)
++                curr_probs = F.softmax(curr_logits, dim=-1)
+                 p = torch.squeeze(
+-                    torch.gather(
+-                        F.softmax(curr_logits, dim=-1),
+-                        dim=-1,
+-                        index=torch.unsqueeze(x, -1),
+-                    ),
++                    torch.gather(curr_probs, dim=-1, index=torch.unsqueeze(x, -1)),
+                     -1,
+                 )
+
++                proposal_trace_data = None
++                if self._trace_enabled():
++                    top2_logits, top2_tokens = torch.topk(curr_logits, k=2, dim=-1)
++                    second_tokens = top2_tokens[:, 1]
++                    current_probs = torch.squeeze(
++                        torch.gather(
++                            curr_probs,
++                            dim=-1,
++                            index=torch.unsqueeze(curr_input_ids, -1),
++                        ),
++                        -1,
++                    )
++                    second_probs = torch.squeeze(
++                        torch.gather(
++                            curr_probs,
++                            dim=-1,
++                            index=torch.unsqueeze(second_tokens, -1),
++                        ),
++                        -1,
++                    )
++                    current_logits = torch.squeeze(
++                        torch.gather(
++                            curr_logits,
++                            dim=-1,
++                            index=torch.unsqueeze(curr_input_ids, -1),
++                        ),
++                        -1,
++                    )
++                    proposed_logits = top2_logits[:, 0]
++                    second_logits = top2_logits[:, 1]
++                    entropy = -torch.sum(
++                        curr_probs.float()
++                        * torch.log(curr_probs.float().clamp_min(1e-30)),
++                        dim=-1,
++                    )
++                    proposal_trace_data = {
++                        "second_tokens": second_tokens,
++                        "current_probs": current_probs,
++                        "second_probs": second_probs,
++                        "current_logits": current_logits,
++                        "proposed_logits": proposed_logits,
++                        "second_logits": second_logits,
++                        "entropy": entropy,
++                    }
++
                  mask_index = curr_input_ids == self.mask_id
                  has_mask = mask_index.any()
 +                active_mask_count_before = int(mask_index.sum().item())
- 
+
                  # Mask to token (M2T)
                  mask_transfer_index = torch.zeros_like(mask_index)
 +                mask_selected_by = "none"
@@ -97,7 +289,7 @@ index a572fda..41f00c2 100644
                      confidence = torch.where(mask_index, p, -np.inf)
                      mask_transfer_index = confidence > self.threshold
 +                    mask_selected_by = "threshold"
- 
+
                      if not mask_transfer_index.any():
                          _, select_index = torch.topk(confidence, k=1)
                          mask_transfer_index[select_index] = True
@@ -105,12 +297,13 @@ index a572fda..41f00c2 100644
                  else:
                      post_edit_steps[i] += 1
                      if post_edit_steps[i] > self.max_post_edit_steps:
-@@ -121,7 +181,65 @@ class JointThreshold(DllmAlgorithm):
-                     finished[i] = True
-                     continue
- 
+@@ -117,11 +346,105 @@ class JointThreshold(DllmAlgorithm):
+                 )
+
+                 transfer_index = mask_transfer_index | edit_transfer_index
 +                mask_events = []
 +                edit_events = []
++                proposals = []
 +                should_trace_snapshot = (
 +                    self.trace_snapshot_every > 0
 +                    and global_iteration % self.trace_snapshot_every == 0
@@ -131,7 +324,40 @@ index a572fda..41f00c2 100644
 +                        event_type="edit",
 +                    )
 +
-                 curr_input_ids[transfer_index] = x[transfer_index]
++                    assert proposal_trace_data is not None
++                    proposals = self._trace_proposals(
++                        curr_input_ids=old_input_ids,
++                        curr_prompt_mask=curr_prompt_mask,
++                        proposed_tokens=x,
++                        second_tokens=proposal_trace_data["second_tokens"],
++                        proposed_probs=p,
++                        current_probs=proposal_trace_data["current_probs"],
++                        second_probs=proposal_trace_data["second_probs"],
++                        proposed_logits=proposal_trace_data["proposed_logits"],
++                        current_logits=proposal_trace_data["current_logits"],
++                        second_logits=proposal_trace_data["second_logits"],
++                        entropy=proposal_trace_data["entropy"],
++                        edit_transfer_index=edit_transfer_index,
++                        mask_transfer_index=mask_transfer_index,
++                        token_ages=token_ages[i],
++                    )
++
++                if transfer_index.any():
++                    curr_input_ids[transfer_index] = x[transfer_index]
++                previous_ages = token_ages[i].clone()
++                unchanged_generated = (
++                    ~curr_prompt_mask
++                    & (curr_input_ids == old_input_ids)
++                    & (curr_input_ids != self.mask_id)
++                )
++                changed_to_token = (
++                    ~curr_prompt_mask
++                    & (curr_input_ids != old_input_ids)
++                    & (curr_input_ids != self.mask_id)
++                )
++                token_ages[i].zero_()
++                token_ages[i][unchanged_generated] = previous_ages[unchanged_generated] + 1
++                token_ages[i][changed_to_token] = 1
 +                active_mask_count_after = int((curr_input_ids == self.mask_id).sum().item())
 +                if self._trace_enabled():
 +                    request_ids = getattr(forward_batch, "rids", None)
@@ -162,14 +388,22 @@ index a572fda..41f00c2 100644
 +                        "active_mask_count_before": active_mask_count_before,
 +                        "active_mask_count_after": active_mask_count_after,
 +                        "mask_selected_by": mask_selected_by,
++                        "state_hash": state_hash,
++                        "proposals": proposals,
 +                        "mask_fills": mask_events,
 +                        "edits": edit_events,
 +                    }
 +                    if should_trace_snapshot:
++                        event["block_token_ids_before"] = old_input_ids.detach().cpu().tolist()
 +                        event["block_token_ids"] = curr_input_ids.detach().cpu().tolist()
 +                    self._write_trace_event(event)
+                 if not transfer_index.any():
+                     finished[i] = True
+                     continue
+-
+-                curr_input_ids[transfer_index] = x[transfer_index]
                  any_changed_in_last_step = True
- 
+
          if any_changed_in_last_step:
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
 index 1671c5e..e53bf3d 100644
@@ -178,7 +412,7 @@ index 1671c5e..e53bf3d 100644
 @@ -440,6 +440,9 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
      # For dumper: request IDs for cross-step sequence tracking
      rids: Optional[List[str]] = None
- 
+
 +    # Diffusion LLM block offsets for trace/event alignment.
 +    dllm_block_offsets: Optional[List[int]] = None
 +
@@ -192,4 +426,4 @@ index 1671c5e..e53bf3d 100644
 +            dllm_block_offsets=batch.dllm_block_offsets,
          )
          device = model_runner.device
- 
+

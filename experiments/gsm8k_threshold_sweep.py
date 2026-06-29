@@ -743,6 +743,9 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
         "critical_token_sample_summary_path",
         "critical_token_summary_path",
         "critical_token_events_path",
+        "critical_token_proposals_path",
+        "critical_edit_proposals_path",
+        "critical_edit_annotation_path",
         "critical_token_stats_path",
         "critical_token_report_path",
     ]
@@ -828,7 +831,7 @@ def main() -> None:
             pair_dllm_template = dict(dllm_template)
             if args.critical_token_analysis:
                 pair_dllm_template["trace_max_events"] = None
-                pair_dllm_template["trace_snapshot_every"] = 0
+                pair_dllm_template["trace_snapshot_every"] = 1
             write_dllm_algorithm_config(
                 dllm_config_path,
                 template=pair_dllm_template,
@@ -910,6 +913,9 @@ def main() -> None:
             "critical_token_sample_summary_path": None,
             "critical_token_summary_path": None,
             "critical_token_events_path": None,
+            "critical_token_proposals_path": None,
+            "critical_edit_proposals_path": None,
+            "critical_edit_annotation_path": None,
             "critical_token_stats_path": None,
             "critical_token_report_path": None,
         }
@@ -933,6 +939,15 @@ def main() -> None:
                     "critical_token_sample_summary_path": str(analysis_paths.sample_summary_path),
                     "critical_token_summary_path": str(analysis_paths.token_summary_path),
                     "critical_token_events_path": str(analysis_paths.token_events_path),
+                    "critical_token_proposals_path": str(
+                        analysis_paths.token_proposals_path
+                    ),
+                    "critical_edit_proposals_path": str(
+                        analysis_paths.edit_proposals_path
+                    ),
+                    "critical_edit_annotation_path": str(
+                        analysis_paths.edit_annotation_path
+                    ),
                     "critical_token_stats_path": str(analysis_paths.critical_token_stats_path),
                     "critical_token_report_path": str(analysis_paths.report_path),
                 }
