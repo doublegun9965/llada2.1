@@ -1242,6 +1242,31 @@ python scripts/write_gsm8k_error_report.py \
   outputs/gsm8k_threshold_sweep/run_<timestamp>/details_threshold_0p5_edit_0p0.jsonl
 ```
 
+Compare all threshold-pair details files in one run, skip samples that are
+correct under every pair, and group wrong pairs by error reason:
+
+```bash
+python scripts/write_gsm8k_threshold_reason_report.py \
+  outputs/gsm8k/run_<timestamp> \
+  --annotations-json outputs/gsm8k/run_<timestamp>/error_reason_annotations.json
+```
+
+The optional annotations JSON maps each `sample_id` to semantic error-reason
+groups. Unannotated wrong outputs are still included as incomplete/degenerate
+generations or grouped by predicted answer. Each invocation writes a fresh run
+under `outputs/gsm8k_threshold_reason_report/`.
+
+```json
+{
+  "3": [
+    {
+      "combos": ["0,0", "0.3,0"],
+      "reason": "Misread three sprints three times per week as three sprints total."
+    }
+  ]
+}
+```
+
 `--use-running-server` can only evaluate one threshold pair, because thresholds are fixed when SGLang starts.
 
 ## Smoke Test
