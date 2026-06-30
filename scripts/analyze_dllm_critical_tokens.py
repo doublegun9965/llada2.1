@@ -444,6 +444,18 @@ def analyze_trace(
             "Trace contains no per-position proposals. Reapply the current "
             "dllm_trace.patch and rerun generation to produce proposal tables."
         )
+    duplicate_runner_ups = sum(
+        1
+        for row in token_proposals
+        if row.get("proposed_token_id") == row.get("second_token_id")
+    )
+    if duplicate_runner_ups:
+        warnings.append(
+            f"Trace contains {duplicate_runner_ups} proposal(s) whose proposed and "
+            "second token ids are identical. These traces were produced by the "
+            "pre-fix runner-up selection and should be regenerated before using "
+            "second_token for analysis."
+        )
     edit_proposals = [row for row in token_proposals if row.get("proposed_edit") is True]
     preserve_manual_annotations(paths.edit_proposals_path, edit_proposals)
 

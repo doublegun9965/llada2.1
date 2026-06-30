@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
-index a572fda..a9ea940 100644
+index a572fda..029862e 100644
 --- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
 +++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
 @@ -1,3 +1,8 @@
@@ -11,7 +11,7 @@ index a572fda..a9ea940 100644
  import numpy as np
  import torch
  import torch.nn.functional as F
-@@ -22,6 +27,177 @@ class JointThreshold(DllmAlgorithm):
+@@ -22,6 +27,181 @@ class JointThreshold(DllmAlgorithm):
              "max_post_edit_steps", 16
          )
          self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
@@ -133,6 +133,10 @@ index a572fda..a9ea940 100644
 +            current_token_id, proposed_token_id, second_token_id, token_age = (
 +                int(value) for value in id_rows[block_offset]
 +            )
++            if proposed_token_id == second_token_id:
++                raise RuntimeError(
++                    "Trace runner-up token must differ from the proposed token"
++                )
 +            (
 +                p_old,
 +                p_new,
@@ -189,7 +193,7 @@ index a572fda..a9ea940 100644
 
      def run(
          self,
-@@ -48,6 +224,9 @@ class JointThreshold(DllmAlgorithm):
+@@ -48,6 +228,9 @@ class JointThreshold(DllmAlgorithm):
              start_list.append(prompt_mask.sum().item())
 
          post_edit_steps = torch.zeros(batch_size, dtype=torch.int32, device=device)
@@ -199,7 +203,7 @@ index a572fda..a9ea940 100644
 
          finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
          # Controls whether to perform an additional forward pass for KV cache persistence.
-@@ -56,7 +235,9 @@ class JointThreshold(DllmAlgorithm):
+@@ -56,7 +239,9 @@ class JointThreshold(DllmAlgorithm):
          any_changed_in_last_step = False
 
          max_iterations = self.block_size + self.max_post_edit_steps
@@ -209,7 +213,7 @@ index a572fda..a9ea940 100644
              if finished.all():
                  break
 
-@@ -75,6 +256,8 @@ class JointThreshold(DllmAlgorithm):
+@@ -75,6 +260,8 @@ class JointThreshold(DllmAlgorithm):
                  curr_input_ids = forward_batch.input_ids[block_start:block_end]
                  curr_logits = logits_output.full_logits[block_start:block_end]
                  curr_prompt_mask = prompt_masks[i]
@@ -218,7 +222,7 @@ index a572fda..a9ea940 100644
 
                  if self.penalty_lambda > 0:
                      prev_ids = curr_input_ids[:-1]
-@@ -83,27 +266,73 @@ class JointThreshold(DllmAlgorithm):
+@@ -83,27 +270,81 @@ class JointThreshold(DllmAlgorithm):
                      )
 
                  x = torch.argmax(curr_logits, dim=-1)
@@ -235,8 +239,12 @@ index a572fda..a9ea940 100644
 
 +                proposal_trace_data = None
 +                if self._trace_enabled():
-+                    top2_logits, top2_tokens = torch.topk(curr_logits, k=2, dim=-1)
-+                    second_tokens = top2_tokens[:, 1]
++                    _, top2_tokens = torch.topk(curr_logits, k=2, dim=-1)
++                    second_tokens = torch.where(
++                        top2_tokens[:, 0] != x,
++                        top2_tokens[:, 0],
++                        top2_tokens[:, 1],
++                    )
 +                    current_probs = torch.squeeze(
 +                        torch.gather(
 +                            curr_probs,
@@ -261,8 +269,12 @@ index a572fda..a9ea940 100644
 +                        ),
 +                        -1,
 +                    )
-+                    proposed_logits = top2_logits[:, 0]
-+                    second_logits = top2_logits[:, 1]
++                    proposed_logits = torch.squeeze(
++                        torch.gather(curr_logits, 1, x.unsqueeze(-1)), -1
++                    )
++                    second_logits = torch.squeeze(
++                        torch.gather(curr_logits, 1, second_tokens.unsqueeze(-1)), -1
++                    )
 +                    entropy = -torch.sum(
 +                        curr_probs.float()
 +                        * torch.log(curr_probs.float().clamp_min(1e-30)),
@@ -297,7 +309,7 @@ index a572fda..a9ea940 100644
                  else:
                      post_edit_steps[i] += 1
                      if post_edit_steps[i] > self.max_post_edit_steps:
-@@ -117,11 +346,105 @@ class JointThreshold(DllmAlgorithm):
+@@ -117,11 +358,105 @@ class JointThreshold(DllmAlgorithm):
                  )
 
                  transfer_index = mask_transfer_index | edit_transfer_index
