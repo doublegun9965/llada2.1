@@ -65,7 +65,13 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
+edit_fallback_topk: 0
+edit_fallback_min_advantage: 0.0
+edit_fallback_only_after_masks: true
+edit_fallback_max_steps: 16
 ```
+
+Set `edit_fallback_topk: 3` to enable T2T advantage fallback after all masks have been filled. If no normal T2T proposal exceeds `edit_threshold`, the decoder edits up to three positions ranked by positive `new_logit - old_logit`. A value of `0` keeps the original behavior.
 
 ```bash
 cd /mnt/workspace/llada2.1

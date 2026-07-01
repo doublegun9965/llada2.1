@@ -296,6 +296,10 @@ threshold: 0.5
 edit_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
+edit_fallback_topk: 0
+edit_fallback_min_advantage: 0.0
+edit_fallback_only_after_masks: true
+edit_fallback_max_steps: 16
 trace_path: null
 trace_snapshot_every: 1
 trace_max_events: null
@@ -870,16 +874,21 @@ trace_max_events: null
 
 `experiments/gsm8k_threshold_sweep.py` reads this YAML as the base template and then overrides `threshold` and `edit_threshold` for each command-line threshold pair. Local options such as `max_post_edit_steps` are carried into the sweep configs.
 
+Set `edit_fallback_topk: 3` to enable post-mask T2T advantage fallback. When no ordinary T2T proposal exceeds `edit_threshold`, the decoder edits up to three non-prompt positions with the largest positive `A = new_logit - old_logit`. It does not supplement a non-empty threshold-selected edit set, and it stops when no candidate has positive advantage or when `edit_fallback_max_steps` is reached. The default value `0` preserves the original decoder.
+
 The GSM8K sweep ignores `trace_path` from this template by default, so normal sweeps do not accidentally write large traces. To record main-evaluation dLLM token trajectories and generate analysis tables, pass `--critical-token-analysis`; the script writes a run-specific `trace_path` for each threshold pair.
 
 Changing `threshold` or `edit_threshold` requires restarting SGLang.
 
 ### SGLang dLLM Trace
 
-Apply only the trace patch when you want to inspect server-side M2T/T2T events:
+Apply the trace and fallback patches when you want to inspect fallback selection alongside server-side M2T/T2T events:
 
 ```bash
-scripts/apply_sglang_patches.sh /mnt/workspace/third_party/sglang-v0.5.12.post1 dllm_trace.patch
+scripts/apply_sglang_patches.sh \
+  /mnt/workspace/third_party/sglang-v0.5.12.post1 \
+  dllm_trace.patch \
+  joint_threshold_t2t_fallback.patch
 ```
 
 Then set `trace_path` in `sglang_server/dllm_algorithm_config.local.yaml`, restart SGLang, and run one chat request from a text prompt file:

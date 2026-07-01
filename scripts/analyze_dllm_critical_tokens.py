@@ -326,6 +326,9 @@ def append_token_event(
             "is_critical": is_critical_type(token_type),
             "is_commit_event": False,
             "changed_token": old_token_id != new_token_id,
+            "accepted_by": item.get("accepted_by", ""),
+            "A": item.get("A"),
+            "fallback_rank": item.get("fallback_rank"),
             "passes_run_threshold": passes_threshold(
                 event_type, prob, threshold, edit_threshold
             ),
@@ -617,6 +620,9 @@ def build_token_proposals(
                     "proposed_edit": proposal.get("proposed_edit"),
                     "accepted_edit": proposal.get("accepted_edit"),
                     "accepted_update": proposal.get("accepted_update"),
+                    "edit_selected_by": event.get("edit_selected_by", ""),
+                    "accepted_by": proposal.get("accepted_by", ""),
+                    "fallback_rank": proposal.get("fallback_rank"),
                     "rejected_reason": proposal.get("rejected_reason"),
                     "token_age": proposal.get("token_age"),
                     "token_type": classify_token(
@@ -701,8 +707,8 @@ def write_edit_annotation(path: Path, rows: list[dict[str, Any]]) -> None:
             )
         lines.extend(
             [
-                "| Offset | Current | Proposed | Second | p_old | p_new | p_second | A | D | Entropy | Accepted | Rejected reason | Manual label | Manual reason |",
-                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|:---:|---|---|---|",
+                "| Offset | Current | Proposed | Second | p_old | p_new | p_second | A | D | Entropy | Accepted | Accepted by | Fallback rank | Rejected reason | Manual label | Manual reason |",
+                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|:---:|---|---:|---|---|---|",
             ]
         )
         for row in sorted(group, key=lambda item: int(item["block_offset"])):
@@ -714,6 +720,7 @@ def write_edit_annotation(path: Path, rows: list[dict[str, Any]]) -> None:
                 f"{format_float(row.get('p_second'))} | {format_float(row.get('A'))} | "
                 f"{format_float(row.get('D'))} | {format_float(row.get('entropy'))} | "
                 f"{as_bool_text(row.get('accepted_edit'))} | "
+                f"{row.get('accepted_by', '')} | {row.get('fallback_rank') or ''} | "
                 f"{row.get('rejected_reason', '')} | {row.get('manual_label', '')} | "
                 f"{str(row.get('manual_reason', '')).replace('|', '&#124;')} |"
             )
@@ -1306,6 +1313,9 @@ TOKEN_EVENTS_FIELDS = [
     "is_critical",
     "is_commit_event",
     "changed_token",
+    "accepted_by",
+    "A",
+    "fallback_rank",
     "passes_run_threshold",
 ]
 
@@ -1346,6 +1356,9 @@ TOKEN_PROPOSAL_FIELDS = [
     "proposed_edit",
     "accepted_edit",
     "accepted_update",
+    "edit_selected_by",
+    "accepted_by",
+    "fallback_rank",
     "rejected_reason",
     "token_age",
     "token_type",

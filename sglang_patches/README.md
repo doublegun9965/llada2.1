@@ -38,4 +38,7 @@ Current patches:
 
 - `deterministic_dllm_compat.patch`: compatibility patch for SGLang deterministic inference with LLaDA 2.1 dLLM.
 - `dllm_trace.patch`: writes JointThreshold M2T/T2T trace events when `trace_path` is set in the DLLM YAML config.
+- `joint_threshold_t2t_fallback.patch`: after `dllm_trace.patch`, adds optional post-mask T2T top-k fallback ranked by positive replacement advantage.
 - `rocm_disable_vllm_rmsnorm.patch`: makes `SGLANG_DISABLE_VLLM_RMSNORM=1` disable the incompatible ROCm vLLM RMSNorm path.
+
+The default alphabetical application order is intentional: `dllm_trace.patch` must be applied before `joint_threshold_t2t_fallback.patch`.

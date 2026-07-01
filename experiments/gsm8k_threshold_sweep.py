@@ -245,6 +245,10 @@ def write_dllm_algorithm_config(
     config["edit_threshold"] = edit_threshold
     config.setdefault("max_post_edit_steps", 16)
     config.setdefault("penalty_lambda", 0)
+    config.setdefault("edit_fallback_topk", 0)
+    config.setdefault("edit_fallback_min_advantage", 0.0)
+    config.setdefault("edit_fallback_only_after_masks", True)
+    config.setdefault("edit_fallback_max_steps", config["max_post_edit_steps"])
     config["trace_path"] = None if trace_path is None else str(trace_path)
     path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -719,6 +723,10 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
     fieldnames = [
         "threshold",
         "edit_threshold",
+        "edit_fallback_topk",
+        "edit_fallback_min_advantage",
+        "edit_fallback_only_after_masks",
+        "edit_fallback_max_steps",
         "batch_size",
         "assistant_prefill_tokens",
         "num_examples",
@@ -826,9 +834,9 @@ def main() -> None:
             else None
         )
         process = None
+        pair_dllm_template = dict(dllm_template)
 
         if not args.use_running_server:
-            pair_dllm_template = dict(dllm_template)
             if args.critical_token_analysis:
                 pair_dllm_template["trace_max_events"] = None
                 pair_dllm_template["trace_snapshot_every"] = 1
@@ -955,6 +963,31 @@ def main() -> None:
 
         summary["dllm_config_path"] = str(dllm_config_path) if not args.use_running_server else None
         summary["server_log_path"] = str(server_log_path) if not args.use_running_server else None
+        summary["edit_fallback_topk"] = (
+            int(pair_dllm_template.get("edit_fallback_topk", 0))
+            if not args.use_running_server
+            else None
+        )
+        summary["edit_fallback_min_advantage"] = (
+            float(pair_dllm_template.get("edit_fallback_min_advantage", 0.0))
+            if not args.use_running_server
+            else None
+        )
+        summary["edit_fallback_only_after_masks"] = (
+            bool(pair_dllm_template.get("edit_fallback_only_after_masks", True))
+            if not args.use_running_server
+            else None
+        )
+        summary["edit_fallback_max_steps"] = (
+            int(
+                pair_dllm_template.get(
+                    "edit_fallback_max_steps",
+                    pair_dllm_template.get("max_post_edit_steps", 16),
+                )
+            )
+            if not args.use_running_server
+            else None
+        )
         summary.update(critical_analysis_summary)
         summaries.append(summary)
         write_summary(output_dir, summaries)

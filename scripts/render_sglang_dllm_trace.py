@@ -65,6 +65,9 @@ def render_event(tokenizer: Any, event: dict[str, Any]) -> list[str]:
         f"- Active masks: `{event.get('active_mask_count_before')}` -> `{event.get('active_mask_count_after')}`",
         f"- Post edit steps: `{event.get('post_edit_steps')}`",
         f"- Mask selection: `{event.get('mask_selected_by')}`",
+        f"- Edit selection: `{event.get('edit_selected_by', 'none')}`",
+        f"- Edit fallback candidates: `{event.get('edit_fallback_candidate_count', 0)}`",
+        f"- Edit fallback selected: `{event.get('edit_fallback_selected_count', 0)}`",
         "",
     ]
 
@@ -94,6 +97,9 @@ def render_event(tokenizer: Any, event: dict[str, Any]) -> list[str]:
                 "- "
                 f"block_offset={item['block_offset']} "
                 f"prob={item['prob']:.6f} "
+                f"A={item.get('A', float('nan')):.6f} "
+                f"accepted_by={item.get('accepted_by', '')} "
+                f"fallback_rank={item.get('fallback_rank')} "
                 f"{markdown_token(old_token)} -> {markdown_token(new_token)}"
             )
         lines.append("")
@@ -165,6 +171,10 @@ def render_trace_to_markdown(
                 f"- Block size: `{first.get('block_size')}`",
                 f"- Threshold: `{first.get('threshold')}`",
                 f"- Edit threshold: `{first.get('edit_threshold')}`",
+                f"- Edit fallback top-k: `{first.get('edit_fallback_topk', 0)}`",
+                f"- Edit fallback minimum advantage: `{first.get('edit_fallback_min_advantage', 0.0)}`",
+                f"- Edit fallback only after masks: `{first.get('edit_fallback_only_after_masks', True)}`",
+                f"- Edit fallback max steps: `{first.get('edit_fallback_max_steps', 0)}`",
                 f"- Max post edit steps: `{first.get('max_post_edit_steps')}`",
                 "",
             ]
