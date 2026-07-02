@@ -38,12 +38,14 @@ This repository is for LLaDA 2.1 experiments that are developed locally but run 
 - `experiments/gsm8k_mask_reconstruct.py` defaults to strict reconstruction: fill masked tokens only. Passing `--editing-threshold` enables reconstruction + editing of non-mask tokens inside the gold solution span.
 - For SGLang `0.5.12.post1`, LLaDA 2.1 `JointThreshold` parameters are server-startup DLLM algorithm config values, not OpenAI request-body values.
 - Threshold sweeps must generate a YAML file and restart SGLang for each threshold pair using `--dllm-algorithm JointThreshold --dllm-algorithm-config <path>`.
-- `experiments/gsm8k_threshold_sweep.py` reads `sglang_server/dllm_algorithm_config.local.yaml` as a template when present, then overrides `threshold` and `edit_threshold` for each sweep pair. Keep non-swept DLLM options such as confidence remasking in the local YAML.
+- `experiments/gsm8k_threshold_sweep.py` reads `sglang_server/dllm_algorithm_config.local.yaml` as a template when present, then overrides `threshold` and the active probability/advantage edit threshold for each sweep pair. Keep non-swept DLLM options such as confidence remasking in the local YAML.
 - If the DLLM template has a non-null `trace_path`, `gsm8k_threshold_sweep.py` should avoid tracing every main-evaluation sample and instead rerun only wrong predictions with trace enabled under the timestamped output directory, then render those trace JSONL files to Markdown.
 - SGLang startup can emit an internal warmup trace for `The capital city of France is`; clear wrong-sample trace files after server readiness and before replaying real GSM8K examples.
-- Current SGLang `JointThreshold` YAML keys are:
+- Current SGLang `JointThreshold` threshold YAML keys are:
   - `threshold`
-  - `edit_threshold`
+  - `edit_threshold_metric` (`probability` or `advantage`)
+  - `edit_threshold` (used by probability mode)
+  - `edit_advantage_threshold` (used by advantage mode)
 - Do not put LLaDA 2.1 threshold values in `generation_config.json`; that file is only for request-level extra body values.
 - SGLang source checkouts are local-only and ignored by Git. Current expected paths:
   - local workspace: `third_party/sglang-v0.5.12.post1`

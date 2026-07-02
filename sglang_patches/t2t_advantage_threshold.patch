@@ -1,0 +1,81 @@
+diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+--- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
++++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
+@@ -27,3 +27,20 @@ class JointThreshold(DllmAlgorithm):
+         self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
++        edit_threshold_metric = str(
++            config.algorithm_config.get("edit_threshold_metric", "probability")
++        ).strip().lower()
++        edit_threshold_metric = {
++            "a": "advantage",
++            "p": "probability",
++            "prob": "probability",
++        }.get(edit_threshold_metric, edit_threshold_metric)
++        if edit_threshold_metric not in {"advantage", "probability"}:
++            raise ValueError(
++                "edit_threshold_metric must be 'advantage' or 'probability', "
++                f"got {edit_threshold_metric!r}"
++            )
++        self.edit_threshold_metric = edit_threshold_metric
++        self.edit_advantage_threshold = float(
++            config.algorithm_config.get("edit_advantage_threshold", 0.0)
++        )
+         self.edit_fallback_topk = int(
+             config.algorithm_config.get("edit_fallback_topk", 0)
+@@ -196,13 +213,22 @@ class JointThreshold(DllmAlgorithm):
+-            if current_is_mask:
++            replacement_advantage = new_logit - old_logit
++
++            if current_is_mask:
+                 rejected_reason = "current_is_mask"
+             elif current_token_id == proposed_token_id:
+                 rejected_reason = "same_as_current"
+             elif accepted_edit:
+                 rejected_reason = ""
+-            elif p_new <= self.edit_threshold:
+-                rejected_reason = "below_edit_threshold"
++            elif (
++                self.edit_threshold_metric == "probability"
++                and p_new <= self.edit_threshold
++            ):
++                rejected_reason = "below_probability_edit_threshold"
++            elif (
++                self.edit_threshold_metric == "advantage"
++                and replacement_advantage <= self.edit_advantage_threshold
++            ):
++                rejected_reason = "below_advantage_edit_threshold"
+             else:
+                 rejected_reason = "not_accepted"
+ 
+-            replacement_advantage = new_logit - old_logit
+             candidate_margin = new_logit - second_logit
+@@ -398,7 +424,17 @@ class JointThreshold(DllmAlgorithm):
+-                edit_transfer_index = (
+-                    (p > self.edit_threshold) & (curr_input_ids != x) & edit_mask
+-                )
++                if self.edit_threshold_metric == "probability":
++                    edit_threshold_scores = p
++                    active_edit_threshold = self.edit_threshold
++                else:
++                    edit_threshold_scores = replacement_advantage
++                    active_edit_threshold = self.edit_advantage_threshold
++                edit_transfer_index = (
++                    (edit_threshold_scores > active_edit_threshold)
++                    & (curr_input_ids != x)
++                    & edit_mask
++                )
+                 edit_selected_by = (
+-                    "threshold" if edit_transfer_index.any() else "none"
++                    f"{self.edit_threshold_metric}_threshold"
++                    if edit_transfer_index.any()
++                    else "none"
+                 )
+                 edit_fallback_candidate_count = 0
+@@ -553,4 +589,7 @@ class JointThreshold(DllmAlgorithm):
+                         "block_size": self.block_size,
+                         "threshold": self.threshold,
+                         "edit_threshold": self.edit_threshold,
++                        "edit_threshold_metric": self.edit_threshold_metric,
++                        "edit_advantage_threshold": self.edit_advantage_threshold,
++                        "active_edit_threshold": active_edit_threshold,
+                         "edit_fallback_topk": self.edit_fallback_topk,

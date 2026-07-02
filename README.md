@@ -93,10 +93,29 @@ python experiments/gsm8k_threshold_sweep.py \
   --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
   --limit 100 \
   --thresholds 0.4,0.5,0.6 \
+  --edit-threshold-metric P \
   --edit-thresholds 0.0,0.2,0.4 \
   --max-tokens 512 \
   --batch-size 4
 ```
+
+`--edit-threshold-metric P` 保持原始 JointThreshold 行为：T2T 在候选 token
+概率大于 `--edit-thresholds` 时执行。要改用相对优势
+`A = new_logit - old_logit` 作为 T2T 门槛，例如扫描 A=0.5/1.0/1.5：
+
+```bash
+python experiments/gsm8k_threshold_sweep.py \
+  --input-jsonl /mnt/workspace/data/gsm8k_test.jsonl \
+  --limit 100 \
+  --thresholds 0.0 \
+  --edit-threshold-metric A \
+  --edit-thresholds 0.5,1.0,1.5 \
+  --max-tokens 512 \
+  --batch-size 4
+```
+
+一次运行只选择一种 T2T 阈值指标，避免把概率值和 logit 差放进同一阈值网格。
+不传 `--edit-threshold-metric` 时默认使用 P，因此旧命令保持兼容。
 
 `--batch-size 4` 表示同一个阈值组合下同时发送 4 个 SGLang 请求；不同阈值组合仍会按顺序重启 SGLang，因为 LLaDA2.1 阈值是 server-startup 配置。
 
@@ -294,6 +313,8 @@ vim sglang_server/dllm_algorithm_config.local.yaml
 ```yaml
 threshold: 0.5
 edit_threshold: 0.0
+edit_threshold_metric: probability
+edit_advantage_threshold: 0.0
 max_post_edit_steps: 16
 penalty_lambda: 0
 edit_fallback_topk: 0
@@ -306,11 +327,11 @@ trace_snapshot_every: 1
 trace_max_events: null
 ```
 
-`experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。也就是说，`max_post_edit_steps` 等本地配置会自动带进 sweep。
+`experiments/gsm8k_threshold_sweep.py` 会读取这个 YAML 作为模板，然后为每组命令行里的 `--thresholds/--edit-thresholds` 生成实际启动用的 DLLM YAML。P 模式覆盖 `edit_threshold`，A 模式覆盖 `edit_advantage_threshold`；`max_post_edit_steps` 等其它本地配置会自动带进 sweep。
 
 GSM8K sweep 默认会忽略模板里的 `trace_path`，避免普通 sweep 意外写大量 trace。需要记录主评测阶段的 dLLM token 轨迹并生成统计表时，使用 `--critical-token-analysis`，脚本会为每个阈值组合自动写本次运行专用的 `trace_path`。
 
-修改 `threshold` 或 `edit_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
+修改 `threshold`、`edit_threshold_metric`、`edit_threshold` 或 `edit_advantage_threshold` 后必须重启 SGLang。当前 GSM8K sweep 脚本会为每组阈值自动写 YAML、启动 SGLang、评测、停止 SGLang，再进入下一组阈值。
 
 ### SGLang dLLM Trace
 

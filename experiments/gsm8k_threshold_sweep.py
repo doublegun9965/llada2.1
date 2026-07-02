@@ -71,7 +71,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--edit-thresholds",
         default="0.0",
-        help="Comma-separated T2T edit_threshold values, e.g. 0.0,0.2,0.4",
+        help=(
+            "Comma-separated active T2T threshold values. With "
+            "--edit-threshold-metric P these are proposed-token probabilities; "
+            "with A they are logit advantages new_logit-old_logit."
+        ),
+    )
+    parser.add_argument(
+        "--edit-threshold-metric",
+        default="P",
+        help=(
+            "T2T threshold metric: P/probability (default, backward compatible) "
+            "or A/advantage."
+        ),
     )
     parser.add_argument(
         "--edit-fallback-rankings",
@@ -112,7 +124,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Base JointThreshold YAML config. Defaults to "
             "sglang_server/dllm_algorithm_config.local.yaml when present, otherwise "
-            "sglang_server/dllm_algorithm_config.yaml. The script overrides threshold/edit_threshold."
+            "sglang_server/dllm_algorithm_config.yaml. The script overrides threshold "
+            "and the active P/A edit threshold."
         ),
     )
     parser.add_argument(
@@ -173,6 +186,27 @@ def parse_thresholds(raw: str) -> list[float]:
     if not values:
         raise ValueError("At least one threshold value is required.")
     return values
+
+
+def normalize_edit_threshold_metric(value: str) -> str:
+    normalized = value.strip().lower()
+    aliases = {
+        "a": "advantage",
+        "advantage": "advantage",
+        "p": "probability",
+        "prob": "probability",
+        "probability": "probability",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "Unsupported edit threshold metric "
+            f"{value!r}; expected A/advantage or P/probability."
+        )
+    return aliases[normalized]
+
+
+def edit_threshold_metric_short_name(value: str) -> str:
+    return "A" if normalize_edit_threshold_metric(value) == "advantage" else "P"
 
 
 def normalize_edit_fallback_ranking(value: str) -> str:
@@ -289,6 +323,7 @@ def write_dllm_algorithm_config(
     template: dict[str, Any],
     threshold: float,
     edit_threshold: float,
+    edit_threshold_metric: str = "probability",
     edit_fallback_ranking: str | None = None,
     edit_fallback_topk: int | None = None,
     trace_path: str | Path | None = None,
@@ -296,7 +331,14 @@ def write_dllm_algorithm_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     config = dict(template)
     config["threshold"] = threshold
-    config["edit_threshold"] = edit_threshold
+    edit_threshold_metric = normalize_edit_threshold_metric(edit_threshold_metric)
+    config["edit_threshold_metric"] = edit_threshold_metric
+    config.setdefault("edit_threshold", 0.0)
+    config.setdefault("edit_advantage_threshold", 0.0)
+    if edit_threshold_metric == "probability":
+        config["edit_threshold"] = edit_threshold
+    else:
+        config["edit_advantage_threshold"] = edit_threshold
     config.setdefault("max_post_edit_steps", 16)
     config.setdefault("penalty_lambda", 0)
     config.setdefault("edit_fallback_topk", 0)
@@ -572,6 +614,7 @@ def evaluate_one_example(
     extra_body: dict[str, Any],
     threshold: float,
     edit_threshold: float,
+    edit_threshold_metric: str,
     temperature: float,
     max_tokens: int,
     assistant_prefill_tokens: int,
@@ -628,6 +671,13 @@ def evaluate_one_example(
         "trace_request_id": trace_request_id,
         "threshold": threshold,
         "edit_threshold": edit_threshold,
+        "edit_threshold_metric": edit_threshold_metric,
+        "edit_probability_threshold": (
+            edit_threshold if edit_threshold_metric == "probability" else None
+        ),
+        "edit_advantage_threshold": (
+            edit_threshold if edit_threshold_metric == "advantage" else None
+        ),
         "question": example.question,
         "gold_answer": example.gold,
         "gold_solution": example.answer,
@@ -657,6 +707,7 @@ def evaluate_threshold_pair(
     base_extra_body: dict[str, Any],
     threshold: float,
     edit_threshold: float,
+    edit_threshold_metric: str,
     temperature: float,
     max_tokens: int,
     assistant_prefill_tokens: int,
@@ -678,7 +729,11 @@ def evaluate_threshold_pair(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     progress_bar = None
     if show_progress and tqdm is not None:
-        description = f"threshold={threshold} edit={edit_threshold} batch={batch_size}"
+        description = (
+            f"threshold={threshold} "
+            f"edit{edit_threshold_metric_short_name(edit_threshold_metric)}={edit_threshold} "
+            f"batch={batch_size}"
+        )
         progress_bar = tqdm(total=len(examples), desc=description, unit="ex")
 
     try:
@@ -694,6 +749,7 @@ def evaluate_threshold_pair(
                     extra_body=extra_body,
                     threshold=threshold,
                     edit_threshold=edit_threshold,
+                    edit_threshold_metric=edit_threshold_metric,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     assistant_prefill_tokens=assistant_prefill_tokens,
@@ -724,7 +780,9 @@ def evaluate_threshold_pair(
                     )
                 elif not show_progress:
                     print(
-                        f"[threshold={threshold} edit={edit_threshold}] "
+                        f"[threshold={threshold} "
+                        f"edit{edit_threshold_metric_short_name(edit_threshold_metric)}="
+                        f"{edit_threshold}] "
                         f"{completed}/{len(examples)} correct={correct_count}/{completed} "
                         f"latency={record['latency_seconds']:.2f}s "
                         f"pred={record['predicted_answer']} gold={record['gold_answer']}",
@@ -744,6 +802,13 @@ def evaluate_threshold_pair(
     summary = {
         "threshold": threshold,
         "edit_threshold": edit_threshold,
+        "edit_threshold_metric": edit_threshold_metric,
+        "edit_probability_threshold": (
+            edit_threshold if edit_threshold_metric == "probability" else None
+        ),
+        "edit_advantage_threshold": (
+            edit_threshold if edit_threshold_metric == "advantage" else None
+        ),
         "batch_size": batch_size,
         "assistant_prefill_tokens": assistant_prefill_tokens,
         "num_examples": total,
@@ -789,6 +854,9 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
     fieldnames = [
         "threshold",
         "edit_threshold",
+        "edit_threshold_metric",
+        "edit_probability_threshold",
+        "edit_advantage_threshold",
         "edit_fallback_ranking",
         "edit_fallback_topk",
         "edit_fallback_min_advantage",
@@ -850,6 +918,7 @@ def main() -> None:
 
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
+    edit_threshold_metric = normalize_edit_threshold_metric(args.edit_threshold_metric)
 
     examples = load_examples(args)
     if not examples:
@@ -920,7 +989,10 @@ def main() -> None:
         edit_fallback_ranking,
         edit_fallback_topk,
     ) in experiment_configs:
-        pair_name = f"threshold_{safe_name(threshold)}_edit_{safe_name(edit_threshold)}"
+        edit_name = "edit" if edit_threshold_metric == "probability" else "editA"
+        pair_name = (
+            f"threshold_{safe_name(threshold)}_{edit_name}_{safe_name(edit_threshold)}"
+        )
         if fallback_cli_sweep:
             pair_name += (
                 f"_fallback_{edit_fallback_ranking_short_name(edit_fallback_ranking)}"
@@ -936,6 +1008,7 @@ def main() -> None:
         )
         process = None
         pair_dllm_template = dict(dllm_template)
+        pair_dllm_template["edit_threshold_metric"] = edit_threshold_metric
         pair_dllm_template["edit_fallback_ranking"] = edit_fallback_ranking
         pair_dllm_template["edit_fallback_topk"] = edit_fallback_topk
 
@@ -948,6 +1021,7 @@ def main() -> None:
                 template=pair_dllm_template,
                 threshold=threshold,
                 edit_threshold=edit_threshold,
+                edit_threshold_metric=edit_threshold_metric,
                 edit_fallback_ranking=edit_fallback_ranking,
                 edit_fallback_topk=edit_fallback_topk,
                 trace_path=critical_trace_path,
@@ -955,7 +1029,8 @@ def main() -> None:
             assert_managed_port_available(server_config)
             print(
                 "Starting SGLang for "
-                f"threshold={threshold} edit_threshold={edit_threshold} "
+                f"threshold={threshold} edit_threshold_metric={edit_threshold_metric} "
+                f"edit_threshold={edit_threshold} "
                 f"fallback_ranking={edit_fallback_ranking_short_name(edit_fallback_ranking)} "
                 f"fallback_topk={edit_fallback_topk}"
             )
@@ -998,6 +1073,7 @@ def main() -> None:
                 base_extra_body=base_extra_body,
                 threshold=threshold,
                 edit_threshold=edit_threshold,
+                edit_threshold_metric=edit_threshold_metric,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 assistant_prefill_tokens=args.assistant_prefill_tokens,
@@ -1107,7 +1183,9 @@ def main() -> None:
         summaries.append(summary)
         write_summary(output_dir, summaries)
         progress_write(
-            f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
+            f"SUMMARY threshold={threshold} "
+            f"edit_threshold_metric={edit_threshold_metric} "
+            f"edit_threshold={edit_threshold} "
             f"fallback_ranking={edit_fallback_ranking_short_name(edit_fallback_ranking)} "
             f"fallback_topk={edit_fallback_topk} "
             f"assistant_prefill_tokens={args.assistant_prefill_tokens} "

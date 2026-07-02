@@ -267,13 +267,20 @@ def has_request_aligned_trace(events: list[dict[str, Any]]) -> bool:
     )
 
 
-def passes_threshold(event_type: str, prob: float | None, threshold: float, edit_threshold: float) -> bool | None:
-    if prob is None:
-        return None
+def passes_threshold(
+    event_type: str,
+    prob: float | None,
+    advantage: float | None,
+    threshold: float,
+    edit_threshold: float,
+    edit_threshold_metric: str,
+) -> bool | None:
     if event_type == "edit":
-        return prob >= edit_threshold
+        if edit_threshold_metric == "advantage":
+            return None if advantage is None else advantage > edit_threshold
+        return None if prob is None else prob > edit_threshold
     if event_type == "mask_fill":
-        return prob >= threshold
+        return None if prob is None else prob > threshold
     return None
 
 
@@ -294,6 +301,7 @@ def append_token_event(
     item: dict[str, Any],
     threshold: float,
     edit_threshold: float,
+    edit_threshold_metric: str,
 ) -> None:
     old_token_id = int(item["old_token_id"])
     new_token_id = int(item["new_token_id"])
@@ -304,6 +312,7 @@ def append_token_event(
     event_index = token_event_counts[event_key]
     token_event_counts[event_key] += 1
     prob = float(item["prob"]) if item.get("prob") is not None else None
+    advantage = float(item["A"]) if item.get("A") is not None else None
     token_events.append(
         {
             "event_id": f"{sample_id}:{generated_pos}:{event_index}",
@@ -327,10 +336,15 @@ def append_token_event(
             "is_commit_event": False,
             "changed_token": old_token_id != new_token_id,
             "accepted_by": item.get("accepted_by", ""),
-            "A": item.get("A"),
+            "A": advantage,
             "fallback_rank": item.get("fallback_rank"),
             "passes_run_threshold": passes_threshold(
-                event_type, prob, threshold, edit_threshold
+                event_type,
+                prob,
+                advantage,
+                threshold,
+                edit_threshold,
+                edit_threshold_metric,
             ),
         }
     )
@@ -591,7 +605,21 @@ def build_token_proposals(
                     "predicted_answer": detail.get("predicted_answer"),
                     "threshold": event.get("threshold", detail.get("threshold")),
                     "edit_threshold": event.get(
-                        "edit_threshold", detail.get("edit_threshold")
+                        "active_edit_threshold", detail.get("edit_threshold")
+                    ),
+                    "edit_threshold_metric": event.get(
+                        "edit_threshold_metric",
+                        detail.get("edit_threshold_metric", "probability"),
+                    ),
+                    "active_edit_threshold": event.get(
+                        "active_edit_threshold", detail.get("edit_threshold")
+                    ),
+                    "edit_probability_threshold": event.get(
+                        "edit_threshold", detail.get("edit_probability_threshold")
+                    ),
+                    "edit_advantage_threshold": event.get(
+                        "edit_advantage_threshold",
+                        detail.get("edit_advantage_threshold"),
                     ),
                     "block_index": block_index,
                     "block_iteration": block_iteration,
@@ -840,6 +868,9 @@ def build_events_from_request_aligned_trace(
         sample_index = int(detail.get("index", 0))
         threshold = float(detail.get("threshold", 0.0))
         edit_threshold = float(detail.get("edit_threshold", 0.0))
+        edit_threshold_metric = str(
+            detail.get("edit_threshold_metric", "probability")
+        )
         block_index = block_start // block_size
         block_iteration = int(trace_event.get("global_iteration", 0))
         global_iteration = block_global_offsets.get((request_id, block_start), 0) + block_iteration
@@ -870,6 +901,7 @@ def build_events_from_request_aligned_trace(
                     item=item,
                     threshold=threshold,
                     edit_threshold=edit_threshold,
+                    edit_threshold_metric=edit_threshold_metric,
                 )
 
 
@@ -894,6 +926,9 @@ def build_events_from_legacy_trace(
         sample_index = int(detail.get("index", len(sample_global_totals) + 1))
         threshold = float(detail.get("threshold", 0.0))
         edit_threshold = float(detail.get("edit_threshold", 0.0))
+        edit_threshold_metric = str(
+            detail.get("edit_threshold_metric", "probability")
+        )
         blocks_needed = block_count_for_detail(detail, block_size)
         cumulative_iteration_offset = 0
 
@@ -936,6 +971,7 @@ def build_events_from_legacy_trace(
                             item=item,
                             threshold=threshold,
                             edit_threshold=edit_threshold,
+                            edit_threshold_metric=edit_threshold_metric,
                         )
             cumulative_iteration_offset += total_block_iterations
 
@@ -1083,6 +1119,15 @@ def build_sample_summary(
                 "correct": detail.get("correct"),
                 "threshold": detail.get("threshold"),
                 "edit_threshold": detail.get("edit_threshold"),
+                "edit_threshold_metric": detail.get(
+                    "edit_threshold_metric", "probability"
+                ),
+                "edit_probability_threshold": detail.get(
+                    "edit_probability_threshold"
+                ),
+                "edit_advantage_threshold": detail.get(
+                    "edit_advantage_threshold"
+                ),
                 "num_blocks": num_blocks,
                 "total_global_iterations": sample_global_totals.get(sample_id),
                 "num_token_events": len(events),
@@ -1246,6 +1291,9 @@ SAMPLE_SUMMARY_FIELDS = [
     "correct",
     "threshold",
     "edit_threshold",
+    "edit_threshold_metric",
+    "edit_probability_threshold",
+    "edit_advantage_threshold",
     "num_blocks",
     "total_global_iterations",
     "num_token_events",
@@ -1329,6 +1377,10 @@ TOKEN_PROPOSAL_FIELDS = [
     "predicted_answer",
     "threshold",
     "edit_threshold",
+    "edit_threshold_metric",
+    "active_edit_threshold",
+    "edit_probability_threshold",
+    "edit_advantage_threshold",
     "block_index",
     "block_iteration",
     "global_iteration",
