@@ -1,14 +1,28 @@
 diff --git a/python/sglang/srt/dllm/algorithm/joint_threshold.py b/python/sglang/srt/dllm/algorithm/joint_threshold.py
-index 029862e..f9ec6a5 100644
+index 029862e..97e067b 100644
 --- a/python/sglang/srt/dllm/algorithm/joint_threshold.py
 +++ b/python/sglang/srt/dllm/algorithm/joint_threshold.py
-@@ -27,6 +27,24 @@ class JointThreshold(DllmAlgorithm):
+@@ -27,6 +27,38 @@ class JointThreshold(DllmAlgorithm):
              "max_post_edit_steps", 16
          )
          self.penalty_lambda = config.algorithm_config.get("penalty_lambda", 0)
 +        self.edit_fallback_topk = int(
 +            config.algorithm_config.get("edit_fallback_topk", 0)
 +        )
++        edit_fallback_ranking = str(
++            config.algorithm_config.get("edit_fallback_ranking", "advantage")
++        ).strip().lower()
++        edit_fallback_ranking = {
++            "a": "advantage",
++            "p": "probability",
++            "prob": "probability",
++        }.get(edit_fallback_ranking, edit_fallback_ranking)
++        if edit_fallback_ranking not in {"advantage", "probability"}:
++            raise ValueError(
++                "edit_fallback_ranking must be 'advantage' or 'probability', "
++                f"got {edit_fallback_ranking!r}"
++            )
++        self.edit_fallback_ranking = edit_fallback_ranking
 +        self.edit_fallback_min_advantage = float(
 +            config.algorithm_config.get("edit_fallback_min_advantage", 0.0)
 +        )
@@ -27,7 +41,7 @@ index 029862e..f9ec6a5 100644
          self.trace_path = config.algorithm_config.get("trace_path")
          self.trace_snapshot_every = int(
              config.algorithm_config.get("trace_snapshot_every", 1)
-@@ -101,6 +119,8 @@ class JointThreshold(DllmAlgorithm):
+@@ -101,6 +133,8 @@ class JointThreshold(DllmAlgorithm):
          edit_transfer_index: torch.Tensor,
          mask_transfer_index: torch.Tensor,
          token_ages: torch.Tensor,
@@ -36,7 +50,7 @@ index 029862e..f9ec6a5 100644
      ) -> list[dict]:
          records = []
          accepted_updates = edit_transfer_index | mask_transfer_index
-@@ -162,6 +182,7 @@ class JointThreshold(DllmAlgorithm):
+@@ -162,6 +196,7 @@ class JointThreshold(DllmAlgorithm):
              proposed_edit = not current_is_mask and current_token_id != proposed_token_id
              accepted_edit = bool(decision_rows[block_offset][1])
              accepted_update = bool(decision_rows[block_offset][2])
@@ -44,7 +58,7 @@ index 029862e..f9ec6a5 100644
  
              if current_is_mask:
                  rejected_reason = "current_is_mask"
-@@ -197,6 +218,8 @@ class JointThreshold(DllmAlgorithm):
+@@ -197,6 +232,8 @@ class JointThreshold(DllmAlgorithm):
                      "proposed_edit": proposed_edit,
                      "accepted_edit": accepted_edit,
                      "accepted_update": accepted_update,
@@ -53,7 +67,7 @@ index 029862e..f9ec6a5 100644
                      "rejected_reason": rejected_reason,
                      "token_age": token_age,
                  }
-@@ -228,6 +251,9 @@ class JointThreshold(DllmAlgorithm):
+@@ -228,6 +265,9 @@ class JointThreshold(DllmAlgorithm):
              start_list.append(prompt_mask.sum().item())
  
          post_edit_steps = torch.zeros(batch_size, dtype=torch.int32, device=device)
@@ -63,7 +77,7 @@ index 029862e..f9ec6a5 100644
          token_ages = torch.zeros(
              batch_size, self.block_size, dtype=torch.int32, device=device
          )
-@@ -275,6 +301,19 @@ class JointThreshold(DllmAlgorithm):
+@@ -275,6 +315,19 @@ class JointThreshold(DllmAlgorithm):
                      torch.gather(curr_probs, dim=-1, index=torch.unsqueeze(x, -1)),
                      -1,
                  )
@@ -83,7 +97,7 @@ index 029862e..f9ec6a5 100644
  
                  proposal_trace_data = None
                  if self._trace_enabled():
-@@ -300,17 +339,6 @@ class JointThreshold(DllmAlgorithm):
+@@ -300,17 +353,6 @@ class JointThreshold(DllmAlgorithm):
                          ),
                          -1,
                      )
@@ -101,7 +115,7 @@ index 029862e..f9ec6a5 100644
                      second_logits = torch.squeeze(
                          torch.gather(curr_logits, 1, second_tokens.unsqueeze(-1)), -1
                      )
-@@ -356,6 +384,56 @@ class JointThreshold(DllmAlgorithm):
+@@ -356,6 +398,63 @@ class JointThreshold(DllmAlgorithm):
                  edit_transfer_index = (
                      (p > self.edit_threshold) & (curr_input_ids != x) & edit_mask
                  )
@@ -138,9 +152,14 @@ index 029862e..f9ec6a5 100644
 +                            self.edit_fallback_topk,
 +                            edit_fallback_candidate_count,
 +                        )
++                        fallback_ranking_scores = (
++                            replacement_advantage
++                            if self.edit_fallback_ranking == "advantage"
++                            else p
++                        )
 +                        fallback_scores = torch.where(
 +                            fallback_candidates,
-+                            replacement_advantage,
++                            fallback_ranking_scores,
 +                            -torch.inf,
 +                        )
 +                        _, fallback_indices = torch.topk(
@@ -154,11 +173,13 @@ index 029862e..f9ec6a5 100644
 +                            device=device,
 +                        )
 +                        edit_fallback_steps[i] += 1
-+                        edit_selected_by = "advantage_topk_fallback"
++                        edit_selected_by = (
++                            f"{self.edit_fallback_ranking}_topk_fallback"
++                        )
  
                  transfer_index = mask_transfer_index | edit_transfer_index
                  mask_events = []
-@@ -380,6 +458,18 @@ class JointThreshold(DllmAlgorithm):
+@@ -380,6 +479,18 @@ class JointThreshold(DllmAlgorithm):
                          probs=p,
                          event_type="edit",
                      )
@@ -177,7 +198,7 @@ index 029862e..f9ec6a5 100644
  
                      assert proposal_trace_data is not None
                      proposals = self._trace_proposals(
-@@ -397,6 +487,8 @@ class JointThreshold(DllmAlgorithm):
+@@ -397,6 +508,8 @@ class JointThreshold(DllmAlgorithm):
                          edit_transfer_index=edit_transfer_index,
                          mask_transfer_index=mask_transfer_index,
                          token_ages=token_ages[i],
@@ -186,11 +207,12 @@ index 029862e..f9ec6a5 100644
                      )
  
                  if transfer_index.any():
-@@ -440,11 +532,23 @@ class JointThreshold(DllmAlgorithm):
+@@ -440,11 +553,24 @@ class JointThreshold(DllmAlgorithm):
                          "block_size": self.block_size,
                          "threshold": self.threshold,
                          "edit_threshold": self.edit_threshold,
 +                        "edit_fallback_topk": self.edit_fallback_topk,
++                        "edit_fallback_ranking": self.edit_fallback_ranking,
 +                        "edit_fallback_min_advantage": self.edit_fallback_min_advantage,
 +                        "edit_fallback_only_after_masks": self.edit_fallback_only_after_masks,
 +                        "edit_fallback_max_steps": self.edit_fallback_max_steps,
@@ -198,7 +220,7 @@ index 029862e..f9ec6a5 100644
 +                        "edit_fallback_candidate_count": edit_fallback_candidate_count,
 +                        "edit_fallback_selected_count": int(
 +                            edit_transfer_index.sum().item()
-+                            if edit_selected_by == "advantage_topk_fallback"
++                            if edit_selected_by.endswith("_topk_fallback")
 +                            else 0
 +                        ),
                          "max_post_edit_steps": self.max_post_edit_steps,

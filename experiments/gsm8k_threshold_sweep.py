@@ -74,6 +74,23 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated T2T edit_threshold values, e.g. 0.0,0.2,0.4",
     )
     parser.add_argument(
+        "--edit-fallback-rankings",
+        default=None,
+        help=(
+            "Optional comma-separated fallback ranking metrics. Use A for replacement "
+            "advantage or P for absolute proposed-token probability, e.g. A,P. "
+            "Defaults to the DLLM YAML template value."
+        ),
+    )
+    parser.add_argument(
+        "--edit-fallback-topks",
+        default=None,
+        help=(
+            "Optional comma-separated fallback position counts, e.g. 0,1,3. "
+            "Defaults to edit_fallback_topk in the DLLM YAML template."
+        ),
+    )
+    parser.add_argument(
         "--generation-config",
         default=None,
         help=(
@@ -158,6 +175,41 @@ def parse_thresholds(raw: str) -> list[float]:
     return values
 
 
+def normalize_edit_fallback_ranking(value: str) -> str:
+    normalized = value.strip().lower()
+    aliases = {
+        "a": "advantage",
+        "advantage": "advantage",
+        "p": "probability",
+        "prob": "probability",
+        "probability": "probability",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "Unsupported edit fallback ranking "
+            f"{value!r}; expected A/advantage or P/probability."
+        )
+    return aliases[normalized]
+
+
+def parse_edit_fallback_rankings(raw: str) -> list[str]:
+    values = [
+        normalize_edit_fallback_ranking(item) for item in raw.split(",") if item.strip()
+    ]
+    if not values:
+        raise ValueError("At least one edit fallback ranking is required.")
+    return values
+
+
+def parse_edit_fallback_topks(raw: str) -> list[int]:
+    values = [int(item.strip()) for item in raw.split(",") if item.strip()]
+    if not values:
+        raise ValueError("At least one edit fallback top-k value is required.")
+    if any(value < 0 for value in values):
+        raise ValueError("Edit fallback top-k values must be non-negative.")
+    return values
+
+
 def default_generation_config_path() -> Path:
     local_path = Path("sglang_server/generation_config.local.json")
     if local_path.exists():
@@ -237,6 +289,8 @@ def write_dllm_algorithm_config(
     template: dict[str, Any],
     threshold: float,
     edit_threshold: float,
+    edit_fallback_ranking: str | None = None,
+    edit_fallback_topk: int | None = None,
     trace_path: str | Path | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,9 +300,16 @@ def write_dllm_algorithm_config(
     config.setdefault("max_post_edit_steps", 16)
     config.setdefault("penalty_lambda", 0)
     config.setdefault("edit_fallback_topk", 0)
+    config.setdefault("edit_fallback_ranking", "advantage")
     config.setdefault("edit_fallback_min_advantage", 0.0)
     config.setdefault("edit_fallback_only_after_masks", True)
     config.setdefault("edit_fallback_max_steps", config["max_post_edit_steps"])
+    if edit_fallback_ranking is not None:
+        config["edit_fallback_ranking"] = normalize_edit_fallback_ranking(
+            edit_fallback_ranking
+        )
+    if edit_fallback_topk is not None:
+        config["edit_fallback_topk"] = edit_fallback_topk
     config["trace_path"] = None if trace_path is None else str(trace_path)
     path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -482,6 +543,11 @@ def completion_tokens(raw: dict[str, Any]) -> int | None:
 
 def safe_name(value: float) -> str:
     return str(value).replace("-", "m").replace(".", "p")
+
+
+def edit_fallback_ranking_short_name(value: str) -> str:
+    normalized = normalize_edit_fallback_ranking(value)
+    return "A" if normalized == "advantage" else "P"
 
 
 def make_run_output_dir(base_output_dir: str) -> Path:
@@ -723,6 +789,7 @@ def write_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
     fieldnames = [
         "threshold",
         "edit_threshold",
+        "edit_fallback_ranking",
         "edit_fallback_topk",
         "edit_fallback_min_advantage",
         "edit_fallback_only_after_masks",
@@ -783,12 +850,6 @@ def main() -> None:
 
     thresholds = parse_thresholds(args.thresholds)
     edit_thresholds = parse_thresholds(args.edit_thresholds)
-    threshold_pairs = [(threshold, edit) for threshold in thresholds for edit in edit_thresholds]
-    if args.use_running_server and len(threshold_pairs) != 1:
-        raise ValueError(
-            "--use-running-server can only evaluate one threshold pair because SGLang "
-            "0.5.12.post1 reads thresholds at server startup."
-        )
 
     examples = load_examples(args)
     if not examples:
@@ -796,6 +857,33 @@ def main() -> None:
 
     base_extra_body = load_base_extra_body(args.generation_config)
     dllm_template = load_dllm_algorithm_template(args.dllm_algorithm_config_template)
+    edit_fallback_rankings = (
+        parse_edit_fallback_rankings(args.edit_fallback_rankings)
+        if args.edit_fallback_rankings is not None
+        else [
+            normalize_edit_fallback_ranking(
+                str(dllm_template.get("edit_fallback_ranking", "advantage"))
+            )
+        ]
+    )
+    edit_fallback_topks = (
+        parse_edit_fallback_topks(args.edit_fallback_topks)
+        if args.edit_fallback_topks is not None
+        else [int(dllm_template.get("edit_fallback_topk", 0))]
+    )
+    experiment_configs = [
+        (threshold, edit, ranking, topk)
+        for threshold in thresholds
+        for edit in edit_thresholds
+        for ranking in edit_fallback_rankings
+        for topk in edit_fallback_topks
+    ]
+    if args.use_running_server and len(experiment_configs) != 1:
+        raise ValueError(
+            "--use-running-server can only evaluate one configuration because SGLang "
+            "0.5.12.post1 reads JointThreshold options at server startup."
+        )
+
     output_dir = make_run_output_dir(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Writing GSM8K results to {output_dir}")
@@ -823,8 +911,21 @@ def main() -> None:
         )
 
     summaries: list[dict[str, Any]] = []
-    for threshold, edit_threshold in threshold_pairs:
+    fallback_cli_sweep = (
+        args.edit_fallback_rankings is not None or args.edit_fallback_topks is not None
+    )
+    for (
+        threshold,
+        edit_threshold,
+        edit_fallback_ranking,
+        edit_fallback_topk,
+    ) in experiment_configs:
         pair_name = f"threshold_{safe_name(threshold)}_edit_{safe_name(edit_threshold)}"
+        if fallback_cli_sweep:
+            pair_name += (
+                f"_fallback_{edit_fallback_ranking_short_name(edit_fallback_ranking)}"
+                f"_topk_{edit_fallback_topk}"
+            )
         details_path = output_dir / f"details_{pair_name}.jsonl"
         dllm_config_path = output_dir / "dllm_configs" / f"{pair_name}.yaml"
         server_log_path = output_dir / "server_logs" / f"{pair_name}.log"
@@ -835,6 +936,8 @@ def main() -> None:
         )
         process = None
         pair_dllm_template = dict(dllm_template)
+        pair_dllm_template["edit_fallback_ranking"] = edit_fallback_ranking
+        pair_dllm_template["edit_fallback_topk"] = edit_fallback_topk
 
         if not args.use_running_server:
             if args.critical_token_analysis:
@@ -845,10 +948,17 @@ def main() -> None:
                 template=pair_dllm_template,
                 threshold=threshold,
                 edit_threshold=edit_threshold,
+                edit_fallback_ranking=edit_fallback_ranking,
+                edit_fallback_topk=edit_fallback_topk,
                 trace_path=critical_trace_path,
             )
             assert_managed_port_available(server_config)
-            print(f"Starting SGLang for threshold={threshold} edit_threshold={edit_threshold}")
+            print(
+                "Starting SGLang for "
+                f"threshold={threshold} edit_threshold={edit_threshold} "
+                f"fallback_ranking={edit_fallback_ranking_short_name(edit_fallback_ranking)} "
+                f"fallback_topk={edit_fallback_topk}"
+            )
             print(f"DLLM config: {dllm_config_path}")
             print(f"Server log: {server_log_path}")
             if critical_trace_path is not None:
@@ -963,6 +1073,11 @@ def main() -> None:
 
         summary["dllm_config_path"] = str(dllm_config_path) if not args.use_running_server else None
         summary["server_log_path"] = str(server_log_path) if not args.use_running_server else None
+        summary["edit_fallback_ranking"] = (
+            str(pair_dllm_template.get("edit_fallback_ranking", "advantage"))
+            if not args.use_running_server
+            else None
+        )
         summary["edit_fallback_topk"] = (
             int(pair_dllm_template.get("edit_fallback_topk", 0))
             if not args.use_running_server
@@ -993,6 +1108,8 @@ def main() -> None:
         write_summary(output_dir, summaries)
         progress_write(
             f"SUMMARY threshold={threshold} edit_threshold={edit_threshold} "
+            f"fallback_ranking={edit_fallback_ranking_short_name(edit_fallback_ranking)} "
+            f"fallback_topk={edit_fallback_topk} "
             f"assistant_prefill_tokens={args.assistant_prefill_tokens} "
             f"accuracy={summary['accuracy']:.4f} "
             f"avg_latency={summary['avg_latency_seconds']:.2f}s "
